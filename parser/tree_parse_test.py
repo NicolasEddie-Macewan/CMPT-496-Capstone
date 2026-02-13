@@ -44,17 +44,30 @@ def test_parse():
 
 def test_chunk():
     """!
-    @brief Performs a test chunking on ConsoleTables.
+    @brief Performs a test chunking on the ConsoleTables codebase.
+    @details Iterates through all parsed bundles, extracts semantic chunks 
+    (methods, constructors, properties), and prints their associated metadata 
+    including class name, line range, and language.
+
+    @return None
+    @post Outputs structured chunk data to the console for verification.
 
     @note The directory path may be different as targetCodebases is an ignored 
     directory. Additionally, pathway must either be an absolute path or 
     relative to the pwd of the terminal.
     """
-    bundles = parse_dir("./targetCodebases/consoleTables/ConsoleTables")
+    bundles = parse_dir("./targetCodebases/humanizer/Humanizer")
     for bundle in bundles:
         chunks = get_chunks(bundle)
         for chunk in chunks:
-            print(chunk)
+            print(f"CHUNK:\t{chunk['name']} ({chunk['type']}) in class {chunk['class']}")
+            print(f"LINES:\t{chunk['start_line']} - {chunk['end_line']}")
+            print(f"FILE:\t{chunk['file']}")
+            print(f"LANG:\t{chunk['language']}")
+            # Extract first line for a clean console preview
+            first_line = chunk['code'].strip().splitlines()[0]
+            print(f"CODE:\t{first_line} ...")
+            print("-"*30)      
     return
 
 # Main entry point

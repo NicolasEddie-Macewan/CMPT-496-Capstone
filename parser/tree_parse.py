@@ -21,14 +21,9 @@ class CodeBundle:
     path: Path
     content: bytes
     tree: Tree
+    language: str = ""
 
-@dataclass
-class ChunkBundle:
-    path: Path
-    content: bytes
-    chunks: list[dict]
-
-def parse_file(filepath: Path, parser: Parser) -> CodeBundle:
+def parse_file(filepath: Path, parser: Parser, language: str) -> CodeBundle:
     """!
     @brief Parses a specific file into a CodeBundle.
     @param filepath Path object representing the file to be parsed.
@@ -53,7 +48,7 @@ def parse_file(filepath: Path, parser: Parser) -> CodeBundle:
     ast = parser.parse(code_bytes)
 
     # Assemble bundle
-    bundle = CodeBundle(path=filepath, content=code_bytes, tree=ast)
+    bundle = CodeBundle(path=filepath, content=code_bytes, tree=ast, language = language)
 
     return bundle
 
@@ -85,19 +80,42 @@ def parse_dir(dirpath: str) -> list[CodeBundle]:
 
     # Parse all files
     for file in pathway.rglob("*.cs"):
-        bundle = parse_file(file, parser)
+        bundle = parse_file(file, parser, "csharp")
         bundle_list.append(bundle)
 
     return bundle_list
 
-def get_chunks(bundle: CodeBundle) -> ChunkBundle:
+def get_chunks(bundle: CodeBundle) -> list[dict]:
+    """!
+    @brief Selects and extracts semantic code blocks from a bundle based on a predefined query.
+    @details Uses S-expression queries to identify method, constructor, and property 
+    declarations. For each match, it extracts the source code, associated metadata, 
+    and climbing context like the parent class name.
+    
+    @param bundle The CodeBundle instance containing the tree and source bytes.
+    @return A list of dictionaries, each containing name, code, class, file, type, 
+    line range, and language info.
+    @exception TypeError Raised if the bundle or its internal attributes are of the incorrect type.
+    
+    @note This function specifically targets C# semantic structures (methods, constructors, properties).
     """
-    @brief Selects nodes from tree based on predefined query
-    """
+    # Validate CodeBundle attributes exist and are of the expected type
+    if not isinstance(bundle, CodeBundle):
+        raise TypeError(f"Expected 'bundle' to be a CodeBundle instance, got {type(bundle).__name__}")
+    
+    if not isinstance(bundle.path, Path):
+        raise TypeError(f"Expected 'bundle.path' to be a pathlib.Path, got {type(bundle.path).__name__}")
+    
+    if not isinstance(bundle.content, bytes):
+        raise TypeError(f"Expected 'bundle.content' to be bytes, got {type(bundle.content).__name__}")
+    
+    if not isinstance(bundle.tree, Tree):
+        raise TypeError(f"Expected 'bundle.tree' to be a tree_sitter.Tree, got {type(bundle.tree).__name__}")
+    
+    if not isinstance(bundle.language, str):
+        raise TypeError(f"Expected 'bundle.language' to be a string, got {type(bundle.language).__name__}")
+    
     # define S-expression queries
-    # method_declaration = class methods
-    # constructor_declaration = class constructor
-    # property_declaration = class properties
     query_text = """
         (method_declaration name: (identifier) @name) @chunk
         (constructor_declaration name: (identifier) @name) @chunk
@@ -118,13 +136,45 @@ def get_chunks(bundle: CodeBundle) -> ChunkBundle:
         # matches is a list of tuples
         chunk_node = captures.get("chunk")[0]
         name_node = captures.get("name")[0]
-        chunks.append(name_node.text.decode("utf-8"))
 
+        if chunk_node and name_node:
+            # Get parent class name by traversing up tree
+            parent_class = get_class_name(chunk_node)
 
+            # Extract text for name and code
+            name_text = name_node.text.decode("utf-8")
+            code_text = bundle.content[chunk_node.start_byte:chunk_node.end_byte].decode("utf-8")
+
+            chunk_info = {
+                "name": name_text,
+                "code": code_text,
+                "class": parent_class,
+                "file": str(bundle.path),
+                "type": chunk_node.type,
+                "start_line": chunk_node.start_point[0] + 1,
+                "end_line": chunk_node.end_point[0] + 1,
+                "language": bundle.language
+            }
+
+            chunks.append(chunk_info)
 
     return chunks
 
 def get_class_name(node: Node) -> str:
+    """!
+    @brief Identifies the parent class name for a given AST node.
+    @details Traverses upward from the provided node through its ancestors 
+    until a 'class_declaration' node is found. It then extracts the text 
+    from the class's identifier child.
+    
+    @param node The tree_sitter.Node to start the upward search from.
+    @return The name of the parent class as a string, or "Global" if no class is found.
+    @exception TypeError Raised if the input node is not a tree_sitter.Node instance.
+    """
+    # Validate input
+    if not isinstance(node, Node):
+        raise TypeError(f"Expected 'node' to be a tree_sitter.Node, got {type(node).__name__}")
+    
     current = node.parent
     while current:
         if current.type == "class_declaration":
