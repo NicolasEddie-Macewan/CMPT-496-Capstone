@@ -1,4 +1,5 @@
 # ignore target codebases
 /targetCodebases
+/vectorStores
 /my_chroma_data
 .env
