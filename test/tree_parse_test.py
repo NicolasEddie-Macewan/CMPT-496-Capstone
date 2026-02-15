@@ -5,7 +5,7 @@
 capabilities of the tree_parse module using sample codebases.
 """
 
-from tree_parse import *
+from utils.tree_parse import *
 
 def test_parse():
     """!
