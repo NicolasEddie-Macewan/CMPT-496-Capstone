@@ -188,7 +188,8 @@ def get_class_name(node: Node) -> str:
     @brief Identifies the parent class name for a given AST node.
     @details Traverses upward from the provided node through its ancestors 
     until a 'class_declaration' node is found. It then extracts the text 
-    from the class's identifier child.
+    from the class's identifier child. For embedded classes, it concatenates
+    parent class names with a dot separator.
     
     @param node The tree_sitter.Node to start the upward search from.
     @return The name of the parent class as a string, or "Global" if no class is found.
@@ -198,12 +199,20 @@ def get_class_name(node: Node) -> str:
     if not isinstance(node, Node):
         raise TypeError(f"Expected 'node' to be a tree_sitter.Node, got {type(node).__name__}")
     
+    class_name = []
     current = node.parent
     while current:
         if current.type == "class_declaration":
             # class name stored in identifier child node
             for child in current.children:
                 if child.type == "identifier":
-                    return child.text.decode("utf-8")
+                    # add class name to list
+                    class_name.append(child.text.decode("utf-8"))
+                    break
         current = current.parent
-    return "Global"
+    
+    if not class_name:
+        return "Global"
+    
+    # Reverse class_name list to get outermost class first and join with dot
+    return ".".join(reversed(class_name))
