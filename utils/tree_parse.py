@@ -122,6 +122,10 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
         (property_declaration name: (identifier) @name) @chunk
     """
 
+    # extract namespace and imports
+    file_namespace = get_namespace(bundle.tree.root_node)
+    file_imports = "\n".join(get_imports(bundle.tree.root_node))
+
     # Prepare query
     lang = bundle.tree.language
     query = Query(lang, query_text)
@@ -131,6 +135,7 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
     matches = cursor.matches(bundle.tree.root_node)
 
     chunks = []
+    properties = {}
 
     for pattern, captures in matches:
         # matches is a list of tuples
@@ -145,6 +150,13 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
             name_text = name_node.text.decode("utf-8")
             code_text = bundle.content[chunk_node.start_byte:chunk_node.end_byte].decode("utf-8")
 
+            # check if node is a property and store in dict for later retrieval
+            if chunk_node.type == "property_declaration":
+                if parent_class not in properties:
+                    properties[parent_class] = []
+                properties[parent_class].append(code_text)
+                continue # skip adding properties to chunks list for now
+
             chunk_info = {
                 "name": name_text,
                 "code": code_text,
@@ -153,10 +165,29 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
                 "type": chunk_node.type,
                 "start_line": chunk_node.start_point[0] + 1,
                 "end_line": chunk_node.end_point[0] + 1,
-                "language": bundle.language
+                "language": bundle.language,
+                "namespace": file_namespace,
+                "imports": file_imports # unlikely to have duplicates but just in case
             }
 
             chunks.append(chunk_info)
+    
+    # Add properties to chunk list with associated class context
+    for class_name, props in properties.items():
+        merged_code = "\n".join(props)
+        chunk_info = {
+            "name": f"{class_name}_properties",
+            "code": merged_code,
+            "class": class_name,
+            "file": str(bundle.path),
+            "type": "property_declaration",
+            "start_line": None, # properties may be non-contiguous, so line numbers are not applicable
+            "end_line": None,
+            "language": bundle.language,
+            "namespace": file_namespace,
+            "imports": "\n".join(sorted(set(file_imports)))
+        }
+        chunks.append(chunk_info)    
 
     return chunks
 
@@ -165,7 +196,8 @@ def get_class_name(node: Node) -> str:
     @brief Identifies the parent class name for a given AST node.
     @details Traverses upward from the provided node through its ancestors 
     until a 'class_declaration' node is found. It then extracts the text 
-    from the class's identifier child.
+    from the class's identifier child. For embedded classes, it concatenates
+    parent class names with a dot separator.
     
     @param node The tree_sitter.Node to start the upward search from.
     @return The name of the parent class as a string, or "Global" if no class is found.
@@ -175,12 +207,73 @@ def get_class_name(node: Node) -> str:
     if not isinstance(node, Node):
         raise TypeError(f"Expected 'node' to be a tree_sitter.Node, got {type(node).__name__}")
     
+    class_name = []
     current = node.parent
     while current:
         if current.type == "class_declaration":
             # class name stored in identifier child node
             for child in current.children:
                 if child.type == "identifier":
-                    return child.text.decode("utf-8")
+                    # add class name to list
+                    class_name.append(child.text.decode("utf-8"))
+                    break
         current = current.parent
-    return "Global"
+    
+    if not class_name:
+        return "Global"
+    
+    # Reverse class_name list to get outermost class first and join with dot
+    return ".".join(reversed(class_name))
+
+def get_namespace(root: Node) -> str:
+    """!
+    @brief Extracts the namespace(s) from a C# source file.
+    @details Scans the top-level children of the root node for traditional 
+    or file-scoped namespace declarations. Extracts the identifier or 
+    qualified name for each.
+    
+    @param root The tree_sitter.Node representing the root of the AST.
+    @return A string of comma-separated namespaces, or "Global" if none found.
+    @exception TypeError Raised if the input root is not a tree_sitter.Node.
+    """
+    # Validate input
+    if not isinstance(root, Node):
+        raise TypeError(f"Expected 'root' to be a tree_sitter.Node, got {type(root).__name__}")
+    
+    found_namespaces = []
+    # check children of root for namespace declarations
+    for child in root.children:
+        if child.type in ["namespace_declaration", "file_scoped_namespace_declaration"]:
+            # check for identifier or qualified_name child node
+            for sub in child.children:
+                if sub.type in ["identifier", "qualified_name"]:
+                    found_namespaces.append(sub.text.decode("utf-8"))
+                    break
+                    
+    if not found_namespaces:
+        return "Global"
+        
+    # Usually just one, but this handles the edge case
+    return ", ".join(found_namespaces)
+
+def get_imports(root: Node) -> list[str]:
+    """!
+    @brief Extracts all 'using' directives from the file root.
+    @details Identifies using_directive nodes and extracts their full text 
+    literal to preserve aliases and static imports.
+    
+    @param root The tree_sitter.Node representing the root of the AST.
+    @return A list of strings containing the raw 'using' statements.
+    @exception TypeError Raised if the input root is not a tree_sitter.Node.
+    """
+    # Validate input
+    if not isinstance(root, Node):
+        raise TypeError(f"Expected 'root' to be a tree_sitter.Node, got {type(root).__name__}")
+    
+    imports = []
+    # check children of root for using_directive
+    for child in root.children:
+        if child.type == "using_directive":
+            # Don't look for identifiers since using directives can be complex
+            imports.append(child.text.decode("utf-8"))
+    return imports

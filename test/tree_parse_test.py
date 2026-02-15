@@ -5,7 +5,7 @@
 capabilities of the tree_parse module using sample codebases.
 """
 
-from tree_parse import *
+from utils.tree_parse import *
 
 def test_parse():
     """!
@@ -64,6 +64,8 @@ def test_chunk():
             print(f"LINES:\t{chunk['start_line']} - {chunk['end_line']}")
             print(f"FILE:\t{chunk['file']}")
             print(f"LANG:\t{chunk['language']}")
+            print(f"NAMES:\t{chunk['namespace']}")
+            print(f"IMPORT:\t{chunk['imports']}")
             # Extract first line for a clean console preview
             first_line = chunk['code'].strip().splitlines()[0]
             print(f"CODE:\t{first_line} ...")
