@@ -167,7 +167,7 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
                 "end_line": chunk_node.end_point[0] + 1,
                 "language": bundle.language,
                 "namespace": file_namespace,
-                "imports": file_imports # unlikely to have duplicates but just in case
+                "imports": file_imports 
             }
 
             chunks.append(chunk_info)
