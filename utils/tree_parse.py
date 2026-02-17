@@ -181,8 +181,8 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
             "class": class_name,
             "file": str(bundle.path),
             "type": "property_declaration",
-            "start_line": None, # properties may be non-contiguous, so line numbers are not applicable
-            "end_line": None,
+            "start_line": -1, # properties may be non-contiguous, so line numbers are not applicable
+            "end_line": -1,
             "language": bundle.language,
             "namespace": file_namespace,
             "imports": "\n".join(sorted(set(file_imports)))
