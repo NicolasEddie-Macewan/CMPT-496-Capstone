@@ -32,3 +32,8 @@ Download Python: [https://www.python.org/downloads/](https://www.python.org/down
 ```powershell
 deactivate
 ```
+
+## Create Vectore Store
+```powershell
+python -m src.build_database <path_to_target_code>
+```
