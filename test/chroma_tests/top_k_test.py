@@ -1,8 +1,23 @@
+"""
+@file test_chroma_retrieval.py
+@brief Unit test to verify similarity search and top-k retrieval from ChromaDB.
+@details This script validates that the vector store can successfully perform 
+         semantic search using the SentenceTransformer embedding function.
+"""
 import chromadb
 from pathlib import Path
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
 def test_top_k():
+    """
+    @brief Executes a similarity search against the Humanizer_db collection.
+    
+    This test verifies the end-to-end retrieval pipeline:
+    1. Locates the persistent database on disk.
+    2. Initializes the MiniLM-L6-v2 embedding model.
+    3. Performs a nearest-neighbor search for a sample natural language query.
+    4. Outputs the top 5 most relevant code chunks.
+    """
     embedding = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
     
     # Absolute path verification
@@ -24,4 +39,7 @@ def test_top_k():
         print(f"\nResult {i+1}: {doc}")
 
 if __name__ == "__main__":
+    """
+    @brief Entry point for the retrieval test.
+    """
     test_top_k()
