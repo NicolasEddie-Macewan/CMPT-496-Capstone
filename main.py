@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import chromadb
+import time
 from pathlib import Path
 
 def clear_screen():
@@ -33,6 +34,8 @@ def create_summaries():
     codebase = Path(input("\nEnter the name of the codebase to analyze: ").strip()).resolve()
     codebase_name = codebase.name
 
+    start_time = time.perf_counter()
+
     # get relative path to target codebase from targetCodebases directory
 
 
@@ -46,6 +49,9 @@ def create_summaries():
     subprocess.run([sys.executable, "-m", "src.build_database_JSON", codebase_name], text=True)
 
     print("Summaries generated successfully!")
+    end_time = time.perf_counter()
+    elapsed = end_time - start_time
+    print(f"Total execution time: {elapsed:.2f} seconds")
     input("Press enter to return to main menu...")
 
 def view_collections(db_type: str):

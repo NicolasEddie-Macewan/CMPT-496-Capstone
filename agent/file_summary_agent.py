@@ -154,7 +154,7 @@ class FileSummaryAgent:
         """
 
         file = state['files'].pop()
-        with open(file, 'r') as f:
+        with open(file, 'r', encoding='utf-8', errors='replace') as f:
             contents = f.read()
         
         messages = [
@@ -208,7 +208,7 @@ class FileSummaryAgent:
         safe_name = file_name.replace(".", "-") + ".json"
         full_path = os.path.join(codebase_subdir, safe_name)
 
-        with open(full_path, "w") as f:
+        with open(full_path, "w", encoding='utf-8') as f:
             f.write(summary_file.model_dump_json(indent=2))
             
         return state
