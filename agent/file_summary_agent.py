@@ -31,7 +31,7 @@ class FileSummaryAgent:
 
     The directory to analyze is provided when calling the run() method.
     """
-    def __init__(self):
+    def __init__(self, llm = None):
         """
         @brief Initializes the FileSummaryAgent.
 
@@ -44,13 +44,16 @@ class FileSummaryAgent:
 
         @return None
         """
-
-        load_dotenv()
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
-            api_key=os.getenv("GOOGLE_API_KEY"))
-        self.structured_llm = self.llm.with_structured_output(SummaryOutput)
-        self.graph = self.build_graph()
+        if llm is not None:
+            self.llm = llm
+            self.structured_llm = self.llm
+        else:
+            load_dotenv()
+            self.llm = ChatGoogleGenerativeAI(
+                model="gemini-3-flash-preview",
+                api_key=os.getenv("GOOGLE_API_KEY"))
+            self.structured_llm = self.llm.with_structured_output(SummaryOutput)
+            self.graph = self.build_graph()
 
 
     def build_graph(self):
@@ -154,26 +157,47 @@ class FileSummaryAgent:
         """
 
         file = state['files'].pop()
-        with open(file, 'r', encoding='utf-8', errors='replace') as f:
-            contents = f.read()
-        
-        messages = [
-            ("system", "You are a helpful assistant that creates concise, accurate summaries of code files."),
-            ("user", f"""
-                File path: {file}
-                Summarize the following code file: {contents}
-            """)
-        ]
 
-        output =  self.structured_llm.invoke(messages)
+        try:
+            with open(file, 'r', encoding='utf-8', errors='replace') as f:
+                contents = f.read()
+            
+            messages = [
+                ("system", "You are a helpful assistant that creates concise, accurate summaries of code files."),
+                ("user", f"""
+                    File path: {file}
+                    Summarize the following code file: {contents}
+                """)
+            ]
 
-        # visual to see if program gets frozen or actually progresses through the codebase
-        print("Finished:", file)
-        
-        return {
-           "file_summary": output, 
-           "current_file": Path(file).name
-        }
+            output =  self.structured_llm.invoke(messages)
+
+            # visual to see if program gets frozen or actually progresses through the codebase
+            print("Finished:", file)
+            
+            # The mock LLM, GenericFakeChatModel cannot use structured output, only returns a string
+            if isinstance(output, str):
+                return {
+                    "file_summary": SummaryOutput(
+                        path=file,
+                        summary=output
+                    ),
+                    "current_file": Path(file).name
+                }
+            else:
+                return {
+                "file_summary": output, 
+                "current_file": Path(file).name
+                }
+        except Exception as e:
+            print(f"Error processing file {file}: {e}")
+            return {
+                "file_summary": SummaryOutput(
+                    path=file,
+                    summary=f"Error generating summary: {e}"
+                ),
+                "current_file": Path(file).name
+            }
         
     def write_file_summary_node(self, state: GraphState):
         """
