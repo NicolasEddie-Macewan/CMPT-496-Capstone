@@ -21,47 +21,82 @@ def clear_screen():
     """
     os.system("cls" if os.name == "nt" else "clear")
 
-def create_summaries():
+def run_step(step_name: str, module: str, args: list, errors: list):
     """
-    @brief Orchestrates the full codebase analysis pipeline.
-    @details Executes three primary sub-processes in sequence:
-    1. Source code vectorization (src.build_database).
-    2. LLM-based summary generation (agent.file_summary_agent).
-    3. Summary vectorization (src.build_database_JSON).
-    @return None
+    @brief Executes a subprocess for a given step in the pipeline.
     """
-    clear_screen()
-    codebase = Path(input("\nEnter the path to the codebase to analyze: ").strip()).resolve()
-    codebase_name = codebase.name
+    print(f"Running step: {step_name}...")
+    start = time.perf_counter()
+    try:
+        # result.returncode is 0 if success, something else if it crashed
+        result = subprocess.run([sys.executable, "-m", module] + args, text=True)
+        
+        if result.returncode != 0:
+            err_msg = f"{step_name} failed with exit code {result.returncode}."
+            print(f"\n[!] {err_msg}")
+            errors.append(err_msg)
+            return False
 
-    start_time = time.perf_counter()
+        elapsed = time.perf_counter() - start
+        print(f"{step_name} completed in {elapsed:.2f} seconds.")
+        return True
 
-    # get relative path to target codebase from targetCodebases directory
+    except Exception as e:
+        err_msg = f"Failed to launch {step_name}: {e}"
+        print(f"\n[!] {err_msg}")
+        errors.append(err_msg)
+        return False
 
+def processing_menu(errors: list):
+    """
+    @brief Sub-menu for initiating the summarization process.
+    """
+    while True:
+        clear_screen()
+        print("========================================")
+        print("   CODEBASE ANALYSIS SYSTEM - CLI")
+        print("========================================")
+        print("1. Full Codebase Analysis Pipeline")
+        print("2. Create Code Database Only")
+        print("3. Create JSON Summaries Only")
+        print("4. Create Summary Database from JSON Only")
+        print("5. Return to Main Menu")
+        print("----------------------------------------")
+        choice = input("Select an option (1-5): ")
+        if choice == '5':
+            break
+        if choice in ['1', '2', '3', '4']:
+            path_input = input("\nEnter the path to the codebase: ").strip()
+            if not path_input: 
+                continue
+            
+            codebase = Path(path_input).resolve()
+            codebase_name = codebase.name
 
-    print("Building vector database...")
-    subprocess.run([sys.executable, "-m", "src.build_database", str(codebase)], text=True)
+            if not codebase.exists():
+                print(f"Error: Path '{codebase}' does not exist.")
+                time.sleep(2)
+                continue
 
-    code_vectorization_time = time.perf_counter() - start_time
-    print(f"\nCode vectorization completed in {code_vectorization_time:.2f} seconds.\n")
-    
-    print("Generating summaries...")
-    subprocess.run([sys.executable, "-m", "agent.file_summary_agent", str(codebase)], text=True)
+            if choice == '1':
+                if run_step("Code Vectorization", "src.build_database", [str(codebase)], errors):
+                    if run_step("Summary Generation", "agent.file_summary_agent", [str(codebase)], errors):
+                        if run_step("Summary Vectorization", "src.build_database_JSON", [codebase_name], errors):
+                            print("\nFull pipeline completed successfully!")
+                
+                input("\nPress enter to return to menu...")
 
-    code_summary_time = time.perf_counter() - start_time - code_vectorization_time
-    print(f"\nSummary generation completed in {code_summary_time:.2f} seconds.\n")
+            elif choice == '2':
+                run_step("Code Vectorization", "src.build_database", [str(codebase)], errors)
+                input("\nTask finished. Press enter...")
 
-    print("Building summary database...")
-    subprocess.run([sys.executable, "-m", "src.build_database_JSON", codebase_name], text=True)
+            elif choice == '3':
+                run_step("Summary Generation", "agent.file_summary_agent", [str(codebase)], errors)
+                input("\nTask finished. Press enter...")
 
-    summary_vectorization_time = time.perf_counter() - start_time - code_vectorization_time - code_summary_time
-    print(f"\nSummary vectorization completed in {summary_vectorization_time:.2f} seconds.\n")
-
-    print("Summaries generated successfully!")
-    end_time = time.perf_counter()
-    elapsed = end_time - start_time
-    print(f"Total execution time: {elapsed/60:.2f} minutes.")
-    input("Press enter to return to main menu...")
+            elif choice == '4':
+                run_step("Summary Vectorization", "src.build_database_JSON", [codebase_name], errors)
+                input("\nTask finished. Press enter...")
 
 def view_collections(db_type: str):
     """
@@ -113,7 +148,7 @@ def view_collections(db_type: str):
             meta = results['metadatas'][i]
             doc = results['documents'][i]
             
-            if db_type == "source":
+            if db_type == "code":
                 # Layout for Source Code DB
                 print(f"\n[ENTRY {i+1}] {meta.get('name', 'N/A')}")
                 print(f"  File: {meta.get('file')}")
@@ -146,6 +181,7 @@ def main_menu():
     corresponding orchestration or viewing functions.
     @return None
     """
+    errors = []
     while True:
         clear_screen()
         print("========================================")
@@ -154,18 +190,28 @@ def main_menu():
         print("1. Create Summaries & Index Codebase")
         print("2. View Summary Collections")
         print("3. View Source Code Collections")
-        print("4. Exit")
+        print("4. View Errors")
+        print("5. Exit")
         print("----------------------------------------")
         
-        choice = input("Select an option (1-4): ")
+        choice = input("Select an option (1-5): ")
 
         if choice == '1':
-            create_summaries()
+            processing_menu(errors)
         elif choice == '2':
             view_collections(db_type="summary")
         elif choice == '3':
-            view_collections(db_type="source")
+            view_collections(db_type="code")
         elif choice == '4':
+            clear_screen()
+            print("--- ERROR LOG ---")
+            if errors:
+                for i, err in enumerate(errors):
+                    print(f"\n[ERROR {i+1}]:\n{err}\n{'-'*40}")
+            else:
+                print("No errors recorded.")
+            input("\nPress enter to return to menu...")
+        elif choice == '5':
             print("Exiting system. Goodbye!")
             sys.exit()
         else:

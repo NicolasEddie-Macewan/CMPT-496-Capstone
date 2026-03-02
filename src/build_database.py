@@ -81,11 +81,11 @@ def build_database(source_path: str) -> None:
     # Verification before upsert
     if not (len(ids) == len(embeddings) == len(metadatas)):
         print(f"CRITICAL ERROR: Data mismatch! IDs: {len(ids)}, Docs: {len(embeddings)}, Meta: {len(metadatas)}")
-        return
+        sys.exit(1)
 
     if not ids:
         print("No valid chunks were generated. Aborting upsert.")
-        return
+        sys.exit(1)
 
     # batch upsert chunks
     batch_size = 100
