@@ -47,7 +47,7 @@ class DirectoryAgent:
         builder.add_edge("retriever", "context_analyser")
         builder.add_conditional_edges("context_analyser", lambda state: "summarizer" if state["sufficient_context_retrieved"] else "retriever")
         builder.add_edge("summarizer", "writer")
-        builder.add_conditional_edges("writer", lambda state: "retriever" if state["directories"] else "END")
+        builder.add_conditional_edges("writer", lambda state: "retriever" if state["directories"] else END)
 
         return builder.compile()
     
@@ -64,7 +64,55 @@ class DirectoryAgent:
         return self.graph.invoke(initial_state)
 
     def crawler_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
-        pass
+        root_path = state["directory_path"]
+
+        if not os.path.isdir(root_path):
+            raise ValueError(f"Invalid directory path: {root_path}")
+
+        discovered_directories = []
+        IGNORED_DIRS = {
+            ".git",
+            ".github",
+            "__pycache__",
+            "node_modules",
+            "bin",
+            "obj",
+            ".venv",
+            ".vscode",
+            "NuSpecs", 
+            "NuSpec",
+            "Debug"
+        }
+
+        # Walk directory tree
+        for root, dirs, _ in os.walk(root_path):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]  # removes directories that are in IGNORED_DIRS
+            for d in dirs:
+                full_path = os.path.join(root, d)
+                discovered_directories.append(full_path)
+
+        # Sort deepest directories first (bottom-up summarization)
+        discovered_directories.sort(
+            key=lambda path: path.count(os.sep),
+            #reverse=True
+        )
+        
+        """
+        for dir in discovered_directories:
+            print(dir)
+        print(len(discovered_directories))
+        """
+
+        return {
+            "directories": deque(discovered_directories),
+            "total_number_of_directories": len(discovered_directories),
+            "codebase_name": Path(root_path).name,
+
+            # Initialize workflow control fields
+            "retrieved_context": [],
+            "sufficient_context_retrieved": True, # ** SET BACK TO FALSE WHEN DONE ** --> needed to run graph or it creates infinite loop
+            "K": 3
+        }        
 
     def retriever_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         """
@@ -95,4 +143,27 @@ class DirectoryAgent:
         pass
 
     def writer_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
-        pass
+        state["directories"].pop()
+
+if __name__ == "__main__":
+    """
+    @brief Script entry point for running directory_agent.
+
+    @details
+
+    @return None
+    """
+
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    PROJECT_ROOT = os.path.dirname(BASE_DIR)
+
+    if len(sys.argv) != 2:
+        print("Usage: python file_summary_agent.py <codebase_name>")
+        sys.exit(1)
+    codebase = sys.argv[1]
+    directory_path = os.path.abspath(codebase)
+
+    agent = DirectoryAgent()
+    agent.run(directory_path)
+    print("DirectoryAgent has completed it's task!")
+    
