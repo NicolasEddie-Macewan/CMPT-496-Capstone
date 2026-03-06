@@ -58,7 +58,11 @@ class DirectoryAgent:
         """
         initial_state = {
             "directory_path": directory_path,
-            "directories": deque()
+            "directories": deque(),
+            "retrieved_context": [],
+            "sufficient_context_retrieved": False,
+            "codebase_k": 3,
+            "file_summary_k": 3
         }
 
         return self.graph.invoke(initial_state)
@@ -71,9 +75,6 @@ class DirectoryAgent:
             - "directories": deque of discovered subdirectory paths, deepest first
             - "total_number_of_directories": count of discovered directories
             - "codebase_name": name of the root directory
-            - "retrieved_context": empty list
-            - "sufficient_context_retrieved": False
-            - "K": int, default 3 for retrieval
         @raises ValueError if "directory_path" is not a valid directory.
         """
         root_path = state["directory_path"]
@@ -114,9 +115,6 @@ class DirectoryAgent:
             "directories": deque(discovered_directories),
             "total_number_of_directories": len(discovered_directories),
             "codebase_name": Path(root_path).name,
-            "retrieved_context": [],
-            "sufficient_context_retrieved": False,
-            "K": 3
         }        
 
     def retriever_node(self, state: DirectoryGraphState) -> DirectoryGraphState:

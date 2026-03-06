@@ -25,4 +25,5 @@ class DirectoryGraphState(TypedDict):
     codebase_name: str
     total_number_of_directories: int
     current_directory: str
-    K: int
+    codebase_k: int
+    file_summary_k: int
