@@ -1,11 +1,13 @@
 from agent.states.directory_agent_state import DirectoryGraphState
-from agent.structured_output.directory_output import DirectoryOutput
+from agent.structured_output.directory_output import DirectoryOutput, ContextAnalysisOutput
 from langgraph.graph import StateGraph, START, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import AIMessage
 from dotenv import load_dotenv
 import os
 import sys
+import chromadb
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from pathlib import Path
 from collections import deque
 
@@ -45,7 +47,12 @@ class DirectoryAgent:
         builder.set_entry_point("crawler")
         builder.add_edge("crawler", "retriever")
         builder.add_edge("retriever", "context_analyser")
-        builder.add_conditional_edges("context_analyser", lambda state: "summarizer" if state["sufficient_context_retrieved"] else "retriever")
+        builder.add_conditional_edges(
+            "context_analyser",
+            lambda state: "summarizer"
+            if state["sufficient_code_context"] and state["sufficient_summary_context"]
+            else "retriever"
+        )
         builder.add_edge("summarizer", "writer")
         builder.add_conditional_edges("writer", lambda state: "retriever" if state["directories"] else END)
 
@@ -56,13 +63,38 @@ class DirectoryAgent:
         @brief Executes the DirectoryAgent workflow starting from the provided initial state.
         @param directory_path The path to the directory to be analyzed.
         """
+        codebase_name = Path(directory_path).name
+
+        script_dir = Path(__file__).parent.resolve()
+        db_dir = (script_dir.parent / "vectorStores").resolve()
+
+        embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        client = chromadb.PersistentClient(path=str(db_dir))
+
+        code_collection = client.get_collection(
+            name=f"{codebase_name}_code_db",
+            embedding_function=embedding_fn
+        )
+
+        summary_collection = client.get_collection(
+            name=f"{codebase_name}_summary_db",
+            embedding_function=embedding_fn
+        )
+
         initial_state = {
             "directory_path": directory_path,
             "directories": deque(),
-            "retrieved_context": [],
-            "sufficient_context_retrieved": False,
-            "codebase_k": 3,
-            "file_summary_k": 3
+            "code_context": [],
+            "summary_context": [],
+            "sufficient_code_context": False,
+            "sufficient_summary_context": False,
+            "codebase_k": 10,
+            "file_summary_k": 10,
+            "current_directory": "",
+            "codebase_name": codebase_name,
+            "total_number_of_directories": 0,
+            "code_collection": code_collection,
+            "summary_collection": summary_collection
         }
 
         return self.graph.invoke(initial_state)
@@ -83,7 +115,7 @@ class DirectoryAgent:
         if not os.path.isdir(root_path):
             raise ValueError(f"Invalid directory path: {root_path}")
 
-        discovered_directories = []
+        discovered_directories = [root_path]
         IGNORED_DIRS = {
             ".git",
             ".github",
@@ -119,22 +151,270 @@ class DirectoryAgent:
 
     def retriever_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         """
-        A note to whoever builds this node: The retrieved_context field in the graph state is set to append instead of overwrite by default. Therefore,
-        if the next node loops back to this one to have it retrieve additional context, you can just write to that state field normally and it will append.
-        The summarizer node should manually clear this field when the summary is generated so that the next retrieval step starts fresh. It is also worth noting
-        that if the retriever node is looped back to to gather additional context, it should gather different context than the previous time. One idea to do so 
-        would be to track a number k, which would be the amount of results to be retrieved (top-k results). The context analyser could then increment this number if 
-        it determines that more context is needed, and the retriever node would retrieve the top-k results according to that number. k should then be added to the
-        graph state, and it should also be noted that this process would need to be done for both of the vector stores (code and summary)
+        @brief Retrieves relevant code and summary context for the current directory using vector search.
+            This node performs retrieval as part of the agentic RAG loop. It queries two ChromaDB
+            vector collections:
+                - A code collection containing embedded code snippets.
+                - A summary collection containing embedded file/class/function summaries.
+
+            Retrieval is based on a query constructed from the current directory's relative path
+            and name. Results are prioritized so that entries belonging to the current directory
+            appear before context from other directories.
+
+            The retrieved context is appended to the existing state context. This allows multiple
+            retrieval iterations to accumulate additional information if the context analyzer
+            determines that more context is required.
+
+            Retrieval depth is controlled by the following parameters stored in the state:
+                - codebase_k: number of code snippets to retrieve.
+                - file_summary_k: number of summary entries to retrieve.
+
+            These values may be increased by the context analyzer node during subsequent iterations.
+        @param state
+            The current workflow state containing directory traversal information, retrieval
+            parameters, and vector store handles.
+        @return DirectoryGraphState
+            Updated state containing:
+                - current_directory: the directory currently being processed
+                - code_context: updated list of retrieved code snippets
+                - summary_context: updated list of retrieved summaries
+        @throws ValueError
+            If no directories remain to retrieve context for.
+        @note
+            Retrieval prioritizes context originating from the current directory, but may also
+            include related context from other directories to provide broader architectural
+            information.
+        @note
+            Context lists accumulate across retrieval iterations. The summarizer node is
+            responsible for clearing these lists when a directory summary has been generated,
+            ensuring that the next directory begins with a fresh retrieval context.
         """
-        pass
+        # get current directory
+        current_directory = state.get("current_directory")
+        if not current_directory:
+            if not state["directories"]:
+                raise ValueError("No directories left to retrieve context for.")
+            current_directory = state["directories"][-1]
+
+        # get collections
+        code_collection = state["code_collection"]
+        summary_collection = state["summary_collection"]
+        root_directory = state["directory_path"]
+
+        # compute relative directory for querying
+        try:
+            rel_dir = os.path.relpath(current_directory, root_directory)
+        except ValueError:
+            rel_dir = current_directory
+
+        rel_dir = Path(rel_dir).as_posix()
+        dir_name = Path(current_directory).name
+
+        # create query text - we can experiment with different query formats, but for now
+        # im just using relative directory and dir_name
+        query_text = f"{rel_dir} {dir_name}" if rel_dir != "." else dir_name
+
+        code_k = state["codebase_k"]
+        summary_k = state["file_summary_k"]
+
+        # Query both vector stores
+        code_results = code_collection.query(
+            query_texts=[query_text],
+            n_results=code_k
+        )
+
+        summary_results = summary_collection.query(
+            query_texts=[query_text],
+            n_results=summary_k
+        )
+
+        # Process results
+        existing_code_context = set(state.get("code_context", []))
+        existing_summary_context = set(state.get("summary_context", []))
+
+        new_code_context = []
+        new_summary_context = []
+
+
+        code_docs = code_results.get("documents", [[]])[0]
+        code_metas = code_results.get("metadatas", [[]])[0]
+
+        summary_docs = summary_results.get("documents", [[]])[0]
+        summary_metas = summary_results.get("metadatas", [[]])[0]
+
+        prioritized_code = []
+        fallback_code = []
+
+        # Prioritize results in current directory, but also include results from relevant
+        # directories outsied of current
+        for doc, meta in zip(code_docs, code_metas):
+            file_path = self._normalize_path(meta.get("file", ""))
+            formatted = self._format_code_result(doc, meta, rel_dir)
+
+            if self._is_in_directory(file_path, rel_dir):
+                prioritized_code.append(formatted)
+            else:
+                fallback_code.append(formatted)
+
+        prioritized_summary = []
+        fallback_summary = []
+
+        for doc, meta in zip(summary_docs, summary_metas):
+            summary_path = self._normalize_path(meta.get("path", ""))
+            formatted = self._format_summary_result(doc, meta, rel_dir)
+
+            if self._is_in_directory(summary_path, rel_dir):
+                prioritized_summary.append(formatted)
+            else:
+                fallback_summary.append(formatted)
+
+        # Append results to context
+        updated_code_context = list(state.get("code_context", []))
+        updated_summary_context = list(state.get("summary_context", []))
+
+        for item in prioritized_code + fallback_code:
+            if item not in existing_code_context:
+                updated_code_context.append(item)
+
+        for item in prioritized_summary + fallback_summary:
+            if item not in existing_summary_context:
+                updated_summary_context.append(item)
+
+        return {
+            "current_directory": current_directory,
+            "code_context": updated_code_context,
+            "summary_context": updated_summary_context,
+        }
 
     def context_analyser_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         """
-        A note to whoever builds this node: I (Nico) added a bool to the state object called "sufficient_context_retrieved". This bool is checked in a
-        conditional edge in the graph after this node, to determine if it should loop back to the retriever.
+        @brief Evaluates whether sufficient retrieval context has been gathered for the current directory.
+            This node is responsible for determining whether the retrieved context is adequate to generate
+            a directory-level summary. It analyzes both code snippets and summary entries collected by the
+            retriever node.
+
+            The evaluation is performed using an LLM with structured output (`ContextAnalysisOutput`).
+            The model examines the retrieved context and decides:
+
+                - Whether the current code context is sufficient.
+                - Whether the current summary context is sufficient.
+                - Whether additional retrieval should be performed.
+
+            If additional context is required, the node increases the retrieval parameters:
+                - `codebase_k` (number of code snippets retrieved)
+                - `file_summary_k` (number of summary entries retrieved)
+
+            These updated values allow the retriever node to perform a deeper search during the next
+            iteration of the agentic RAG loop.
+
+            A safeguard is implemented using maximum retrieval limits. If the retrieval parameters reach
+            their configured maximum values, the node forces the sufficiency flags to `True` so the workflow
+            can progress to the summarization stage.
+        @note
+            If both `code_context` and `summary_context` are empty, the LLM call is skipped and the retrieval
+            depth is increased automatically.
+        @param state
+            The current workflow state containing the directory being analyzed, previously retrieved
+            context, and retrieval parameters.
+        @return DirectoryGraphState
+            Updated state containing:
+                - sufficient_code_context: whether enough code snippets have been retrieved
+                - sufficient_summary_context: whether enough summary entries have been retrieved
+                - codebase_k: updated retrieval depth for code snippets
+                - file_summary_k: updated retrieval depth for summaries
+        @throws ValueError
+            If no directories are available for context analysis.
         """
-        pass
+        current_directory = state.get("current_directory")
+        if not current_directory:
+            if not state["directories"]:
+                raise ValueError("No directories available for context analysis.")
+            current_directory = state["directories"][-1]
+
+        root_directory = state["directory_path"]
+
+        try:
+            rel_dir = os.path.relpath(current_directory, root_directory)
+        except ValueError:
+            rel_dir = current_directory
+
+        rel_dir = Path(rel_dir).as_posix()
+
+        code_context = state.get("code_context", [])
+        summary_context = state.get("summary_context", [])
+
+        max_codebase_k = 20
+        max_file_summary_k = 20
+
+        if not code_context and not summary_context:
+            return {
+                "sufficient_code_context": False,
+                "sufficient_summary_context": False,
+                "codebase_k": min(state["codebase_k"] + 2, max_codebase_k),
+                "file_summary_k": min(state["file_summary_k"] + 2, max_file_summary_k),
+            }
+
+        structured_llm = self.llm.with_structured_output(ContextAnalysisOutput)
+
+        prompt = f"""
+        You are deciding whether enough retrieval context has been gathered to write a directory-level summary.
+
+        Current directory absolute path:
+        {current_directory}
+
+        Current directory relative path:
+        {rel_dir}
+
+        Current retrieval settings:
+        - codebase_k: {state["codebase_k"]}
+        - file_summary_k: {state["file_summary_k"]}
+
+        Code context:
+        {chr(10).join(code_context) if code_context else "None"}
+
+        Summary context:
+        {chr(10).join(summary_context) if summary_context else "None"}
+
+        Decide:
+        1. Is the code context sufficient?
+        2. Is the summary context sufficient?
+        3. If not, recommend small increases.
+
+        Guidelines:
+        - Prefer small increases, usually 1 to 5.
+        - If the context is enough to write a reasonable directory summary, mark it sufficient.
+        - Do not recommend negative increases.
+        """
+
+        analysis = structured_llm.invoke(prompt)
+
+        code_increase = max(0, analysis.recommended_codebase_k_increase)
+        summary_increase = max(0, analysis.recommended_file_summary_k_increase)
+
+        next_codebase_k = state["codebase_k"]
+        next_file_summary_k = state["file_summary_k"]
+
+        if not analysis.sufficient_code_context:
+            next_codebase_k = min(
+                state["codebase_k"] + max(1, code_increase),
+                max_codebase_k
+            )
+
+        if not analysis.sufficient_summary_context:
+            next_file_summary_k = min(
+                state["file_summary_k"] + max(1, summary_increase),
+                max_file_summary_k
+            )
+
+        code_at_cap = next_codebase_k >= max_codebase_k
+        summary_at_cap = next_file_summary_k >= max_file_summary_k
+
+        return {
+            "sufficient_code_context": analysis.sufficient_code_context or code_at_cap,
+            "sufficient_summary_context": analysis.sufficient_summary_context or summary_at_cap,
+            "codebase_k": next_codebase_k,
+            "file_summary_k": next_file_summary_k,
+        }
 
     def summarizer_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         """
@@ -147,6 +427,91 @@ class DirectoryAgent:
 
     def writer_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         state["directories"].pop()
+
+    # Helper methods
+    def _normalize_path(self, path_value: str) -> str:
+        """
+        @brief Normalizes a filesystem path to POSIX format.
+
+        Converts the provided path to a forward-slash POSIX-style path to ensure
+        consistent comparisons across operating systems.
+
+        @param path_value The path to normalize.
+        @return The normalized POSIX-style path, or an empty string if the input is empty.
+        """
+        if not path_value:
+            return ""
+        return Path(path_value).as_posix()
+
+    def _is_in_directory(self, candidate_path: str, target_rel_dir: str) -> bool:
+        """
+        @brief Checks whether a file path belongs to a specified directory.
+
+        Determines if the parent directory of the given path matches or is contained
+        within the target relative directory.
+
+        @param candidate_path The file path being evaluated.
+        @param target_rel_dir The relative directory to check membership against.
+        @return True if the path belongs to the directory or one of its subdirectories.
+        """
+        candidate_path = self._normalize_path(candidate_path)
+
+        if target_rel_dir == ".":
+            return True
+
+        parent_dir = Path(candidate_path).parent.as_posix()
+        return parent_dir == target_rel_dir or parent_dir.startswith(target_rel_dir + "/")
+
+    def _format_code_result(self, doc: str, meta: dict, rel_dir: str) -> str:
+        """
+        @brief Formats a retrieved code chunk and its metadata for inclusion in context.
+
+        Produces a structured string representation of a code snippet retrieved from
+        the vector database, including metadata such as file location, container,
+        namespace, and line numbers.
+
+        @param doc The retrieved code snippet content.
+        @param meta Metadata associated with the snippet.
+        @param rel_dir The relative directory currently being processed.
+        @return A formatted string representing the code context entry.
+        """
+        file_path = self._normalize_path(str(meta.get("file", "unknown")))
+
+        return (
+            f"[CODE CHUNK]\n"
+            f"Directory: {rel_dir}\n"
+            f"File: {file_path}\n"
+            f"Container: {meta.get('container', 'unknown')}\n"
+            f"Name: {meta.get('name', 'unknown')}\n"
+            f"Type: {meta.get('type', 'unknown')}\n"
+            f"Namespace: {meta.get('namespace', 'unknown')}\n"
+            f"Lines: {meta.get('start_line', '?')}-{meta.get('end_line', '?')}\n"
+            f"Content:\n{doc}"
+        )
+
+    def _format_summary_result(self, doc: str, meta: dict, rel_dir: str) -> str:
+        """
+        @brief Formats a retrieved summary entry and its metadata for context.
+
+        Produces a structured representation of a summary node retrieved from the
+        summary vector database, including its path, type, and parent information.
+
+        @param doc The retrieved summary text.
+        @param meta Metadata associated with the summary node.
+        @param rel_dir The relative directory currently being processed.
+        @return A formatted string representing the summary context entry.
+        """
+        summary_path = self._normalize_path(str(meta.get("path", "unknown")))
+
+        return (
+            f"[SUMMARY NODE]\n"
+            f"Directory: {rel_dir}\n"
+            f"Path: {summary_path}\n"
+            f"Node Type: {meta.get('type', 'unknown')}\n"
+            f"Name: {meta.get('name', 'unknown')}\n"
+            f"Parent: {meta.get('parent', 'N/A')}\n"
+            f"Content:\n{doc}"
+        )
 
 if __name__ == "__main__":
     """
