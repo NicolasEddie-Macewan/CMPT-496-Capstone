@@ -232,10 +232,6 @@ class DirectoryAgent:
         existing_code_context = set(state.get("code_context", []))
         existing_summary_context = set(state.get("summary_context", []))
 
-        new_code_context = []
-        new_summary_context = []
-
-
         code_docs = code_results.get("documents", [[]])[0]
         code_metas = code_results.get("metadatas", [[]])[0]
 
