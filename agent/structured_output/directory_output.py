@@ -26,3 +26,12 @@ class DirectoryOutput(BaseModel):
     purpose: str = Field(..., description="A summary of the purpose of the directory and its contents. This should be a high-level overview of what the directory is for and how it fits into the overall codebase, rather than a detailed description of specific files or subdirectories contained within it.")
     responsibilities: Optional[list[str]] = Field(default_factory=list, description="A list of specific tasks or domains this directory handles (e.g., 'User Authentication', 'Database Migrations'). Leave as an empty list if there are no specific responsibilities that can be identified or if they cannot be determined.")
     # unresolved_questions: Optional[list[str]] = Field(default_factory=list, description="A list of questions that remain unanswered about the directory and its contents, which may require additional context to properly answer. Leave as an empty list if there are no such questions.")
+
+class ContextAnalysisOutput(BaseModel):
+    """
+    @brief A pydantic BaseModel representing the output of the context analysis node.
+    """
+    sufficient_code_context: bool = Field(description="Whether the retrieved code context is sufficient to summarize the current directory.")
+    sufficient_summary_context: bool = Field(description="Whether the retrieved summary context is sufficient to summarize the current directory.")
+    recommended_codebase_k_increase: int = Field(default=0,description="How many more code snippets to retrieve.")
+    recommended_file_summary_k_increase: int = Field(default=0,description="How many more file summaries to retrieve.")
