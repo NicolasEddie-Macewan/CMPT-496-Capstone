@@ -352,9 +352,8 @@ class DirectoryAgent:
 
         structured_llm = self.llm.with_structured_output(ContextAnalysisOutput)
 
-        prompt = f"""
-        You are deciding whether enough retrieval context has been gathered to write a directory-level summary.
-
+        messages = [("system", "You are a Senior Software Architect. You are deciding whether enough retrieval context has been gathered to write a directory-level summary.")
+        ("user",f"""
         Current directory absolute path:
         {current_directory}
 
@@ -380,9 +379,9 @@ class DirectoryAgent:
         - Prefer small increases, usually 1 to 5.
         - If the context is enough to write a reasonable directory summary, mark it sufficient.
         - Do not recommend negative increases.
-        """
+        """)]
 
-        analysis = structured_llm.invoke(prompt)
+        analysis = structured_llm.invoke(messages)
 
         code_increase = max(0, analysis.recommended_codebase_k_increase)
         summary_increase = max(0, analysis.recommended_file_summary_k_increase)
