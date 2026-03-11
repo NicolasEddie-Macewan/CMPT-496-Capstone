@@ -149,11 +149,16 @@ class DirectoryAgent:
         """
         if (isinstance(self.llm, GenericFakeChatModel)):
             output = self.llm.invoke("")
-            return DirectoryOutput(
-                directory_name = Path(state["current_directory"]).name,
-                directory_path = state["current_directory"],
-                purpose = output.content
-            )
+            return {
+                "code_context": [], # Clear code and summary context and k after summarization so that the next retrieval starts fresh
+                "summary_context": [],
+                "codebase_k": 10,
+                "file_summary_k": 10,
+                "directory_summary": DirectoryOutput(
+                    directory_name = Path(state["current_directory"]).name,
+                    directory_path = state["current_directory"],
+                    purpose = output.content)
+            }
         
         try:
             # Structure LLM output
@@ -200,18 +205,26 @@ class DirectoryAgent:
 
             print(f"Generated summary for directory {state['current_directory']}")
 
-            # Update deque of directories, current_dir
-
             return {
                 "code_context": [], # Clear code and summary context and k after summarization so that the next retrieval starts fresh
                 "summary_context": [],
                 "codebase_k": 10,
                 "file_summary_k": 10,
                 "directory_summary": output,
+                "child_summaries": {current_dir: output} # Add the current summary to the child_summaries dict
             }
         except Exception as e:
             print(f"Error during summarization: {e}")
-            raise e
+            return {
+                "code_context": [], # Clear code and summary context and k after summarization so that the next retrieval starts fresh
+                "summary_context": [],
+                "codebase_k": 10,
+                "file_summary_k": 10,
+                "directory_summary": DirectoryOutput(
+                    directory_name = Path(state["current_directory"]).name,
+                    directory_path = state["current_directory"],
+                    purpose = f"Error generating summary: {e}")
+            }
 
 
 
