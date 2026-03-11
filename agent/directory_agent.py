@@ -2,7 +2,7 @@ from agent.states.directory_agent_state import DirectoryGraphState
 from agent.structured_output.directory_output import DirectoryOutput
 from langgraph.graph import StateGraph, START, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import AIMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from dotenv import load_dotenv
 import os
 import sys
@@ -143,7 +143,15 @@ class DirectoryAgent:
         Also, as mentioned in the context analyser node, make sure to clear the retrieved_context field and reset the sufficient_context_retrieved flag
         in the state object in this node, so that the next retrieval step starts with an empty context.
         """
-        pass
+        if (isinstance(self.llm, GenericFakeChatModel)):
+            output = self.llm.invoke("")
+            return DirectoryOutput(
+                directory_name = Path(state["current_directory"]).name,
+                directory_path = state["current_directory"],
+                purpose = output.content
+            )
+        
+        strucured_llm = self.llm.with_structured_output(DirectoryOutput)
 
     def writer_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         state["directories"].pop()
