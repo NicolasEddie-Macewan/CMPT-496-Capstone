@@ -54,7 +54,10 @@ class DirectoryAgent:
             else "retriever"
         )
         builder.add_edge("summarizer", "writer")
-        builder.add_conditional_edges("writer", lambda state: "retriever" if state["directories"] else END)
+        builder.add_conditional_edges(
+            "writer",
+            lambda state: "retriever" if state["current_directory"] else END
+        )
 
         return builder.compile()
     
@@ -141,8 +144,12 @@ class DirectoryAgent:
         # Sort deepest directories first (bottom-up summarization)
         discovered_directories.sort(
             key=lambda path: path.count(os.sep),
-            reverse=True
+            #reverse=True
         )
+        
+        print("DISCOVERED DIRECTORIES:")
+        for d in discovered_directories:
+            print(d)
 
         first_dir = discovered_directories.pop()
 
@@ -196,9 +203,7 @@ class DirectoryAgent:
         # get current directory
         current_directory = state.get("current_directory")
         if not current_directory:
-            if not state["directories"]:
-                raise ValueError("No directories left to retrieve context for.")
-            current_directory = state["directories"][-1]
+            raise ValueError("Current directory not set.")
 
         # get collections
         code_collection = state["code_collection"]
@@ -327,9 +332,7 @@ class DirectoryAgent:
         """
         current_directory = state.get("current_directory")
         if not current_directory:
-            if not state["directories"]:
-                raise ValueError("No directories available for context analysis.")
-            current_directory = state["directories"][-1]
+            raise ValueError("Current directory not set.")
 
         root_directory = state["directory_path"]
 
@@ -356,7 +359,7 @@ class DirectoryAgent:
 
         structured_llm = self.llm.with_structured_output(ContextAnalysisOutput)
 
-        messages = [("system", "You are a Senior Software Architect. You are deciding whether enough retrieval context has been gathered to write a directory-level summary.")
+        messages = [("system", "You are a Senior Software Architect. You are deciding whether enough retrieval context has been gathered to write a directory-level summary."),
         ("user",f"""
         Current directory absolute path:
         {current_directory}
@@ -421,6 +424,7 @@ class DirectoryAgent:
         @param state Workflow state object containing the current directory and retrieved context.
         @return Updated state with directory summary in the form of a DirectoryOutput object.
         """
+        
         if (isinstance(self.llm, GenericFakeChatModel)):
             output = self.llm.invoke("")
             return {
@@ -506,10 +510,46 @@ class DirectoryAgent:
                     purpose = f"Error generating summary: {e}")
             }
 
-
-
     def writer_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
-        state["directories"].pop()
+        base_output_dir = "./agent/directory_agent_output"
+        os.makedirs(base_output_dir, exist_ok=True)
+
+        # 2. Append the codebase name to create a subdirectory
+        # state["codebase_name"] comes from the crawler node
+        codebase_subdir = os.path.join(base_output_dir, state["codebase_name"])
+        os.makedirs(codebase_subdir, exist_ok=True)
+
+        directory_summary = state['directory_summary']
+        
+        # 3. Create the full file path inside the subdirectory
+        # We still replace dots with hyphens to avoid double-extension confusion
+        rel_path = os.path.relpath(directory_summary.directory_path, state["directory_path"])
+
+        # Detect root directory
+        if rel_path == ".":
+            final_dir = os.path.join(codebase_subdir, "final_output")
+            os.makedirs(final_dir, exist_ok=True)
+
+            safe_name = state["codebase_name"] + ".json"
+            full_path = os.path.join(final_dir, safe_name)
+
+        else:
+            safe_name = Path(rel_path).as_posix().strip("./").replace("/", "_") + ".json"
+            full_path = os.path.join(codebase_subdir, safe_name)
+        
+        with open(full_path, "w", encoding='utf-8') as f:
+            f.write(directory_summary.model_dump_json(indent=2))
+        
+        if state["directories"]:
+            next_dir = state["directories"].pop()
+            state["current_directory"] = next_dir
+        else:
+            state["current_directory"] = None
+
+        
+
+        return state
+        
 
     # Helper methods
     def _normalize_path(self, path_value: str) -> str:
