@@ -316,7 +316,7 @@ async def _summarize_one(structured_llm, file_path: str):
         
         Relationship PlantUML formatting:
         - Use `<|--` for inheritance.
-        - Use `-->` for association.
+        - Use `--` for association.
         - Do not use aggregation (`o--`) or composition (`*--`) symbols.
 
         PlantUML static member formatting:

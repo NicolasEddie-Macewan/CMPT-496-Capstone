@@ -4,7 +4,7 @@
 """
 
 from typing import TypedDict, Deque, Annotated, Any
-from agent.structured_output.directory_output import DirectoryOutput
+from agent.structured_output.directory_output import DirectoryOutput, JudgementOutput
 from operator import add
 
 def merge_summaries(existing: dict, new: dict) -> dict:
@@ -79,3 +79,5 @@ class DirectoryGraphState(TypedDict):
     file_summary_k: int
     code_collection: Any
     summary_collection: Any
+    summary_acceptable: bool
+    summary_feedback: str

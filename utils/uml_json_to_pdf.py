@@ -635,12 +635,20 @@ def build_story(
     story.append(Paragraph(html.escape(summary), styles["Body"]))
     story.append(Spacer(1, 0.1 * inch))
 
+    types = data.get("types") or []
+
+    type_kinds = sorted(
+        {safe_text(t.get("kind", "unknown")).lower() for t in types}
+    )
+
+    type_summary = ", ".join(type_kinds) if type_kinds else "—"
+
     meta_rows = [
-    ["Source file", html.escape(safe_text(data.get("path")))],
-    ["Type count", str(len(data.get("types") or []))],
-    ["Relationships", str(len(data.get("relationships") or []))],
-    ["Dependencies", str(len(data.get("dependencies") or []))],
-]
+        ["Source file", html.escape(safe_text(data.get("path")))],
+        ["Types", html.escape(type_summary)],
+        ["Relationships", str(len(data.get("relationships") or []))],
+        ["Dependencies", str(len(data.get("dependencies") or []))],
+    ]
     story.append(build_member_table("Overview", meta_rows, styles))
     story.append(Spacer(1, 0.14 * inch))
 
