@@ -1,5 +1,5 @@
 from agent.states.directory_agent_state import DirectoryGraphState
-from agent.structured_output.directory_output import DirectoryOutput, ContextAnalysisOutput
+from agent.structured_output.directory_output import DirectoryOutput, ContextAnalysisOutput, JudgementOutput
 from langgraph.graph import StateGraph, START, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -98,7 +98,9 @@ class DirectoryAgent:
             "total_number_of_directories": 0,
             "child_summaries": {},
             "code_collection": code_collection,
-            "summary_collection": summary_collection
+            "summary_collection": summary_collection,
+            "summary_acceptable": False,
+            "summary_feedback": ""
         }
 
         return self.graph.invoke(initial_state)
@@ -503,6 +505,73 @@ class DirectoryAgent:
                     directory_path = state["current_directory"],
                     purpose = f"Error generating summary: {e}")
             }
+        
+    def judgement_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
+        """
+        @brief Evaluates the quality of the generated directory summary and determines if it meets the required standards.
+        @param state Workflow state object containing the generated directory summary.
+        @return Updated state with a flag indicating whether the summary is satisfactory or if it needs to be regenerated.
+        """
+        current_directory = state.get("current_directory")
+        if not current_directory:
+            raise ValueError("No current directory available for summary judgement.")
+
+        summary = state.get("directory_summary")
+        if not summary:
+            raise ValueError("No directory summary available for judgement.")
+        
+        # get context for judgement
+        structured_llm = self.llm.with_structured_output(JudgementOutput)
+        child_summaries = self._get_child_directory_summaries(current_directory, state["child_summaries"])
+        formatted_child_summaries = self._format_child_summaries(child_summaries)
+        summary_context = "\n\n".join(state.get("summary_context", []))
+        code_context = "\n\n".join(state.get("code_context", []))
+
+        messages = [
+            ("system", """You are a Senior Software Architect. 
+             Your task is to evaluate whether the summary of a directory is actually useful, specific, and grounded in 
+             the provided context."""),
+            ("user", f"""
+            DIRECTORY:
+            {current_directory}
+
+            GENERATED SUMMARY:
+            directory_name: {summary.directory_name}
+            directory_path: {summary.directory_path}
+            purpose: {summary.purpose}
+            responsibilities: {summary.responsibilities}
+
+            CONTEXT USED TO GENERATE THE SUMMARY:
+
+            CHILD DIRECTORY SUMMARIES:
+            {formatted_child_summaries}
+
+            FILE-LEVEL SUMMARIES:
+            {summary_context if summary_context else "None"}
+
+            CODE SNIPPETS:
+            {code_context if code_context else "None"}
+
+            EVALUATION CRITERIA:
+            - The purpose must not be vague.
+            - The summary must say what the directory is actually for.
+            - The summary should reflect evidence from the context.
+            - Responsibilities should be concrete when possible.
+            - Reject generic filler like 'contains important components' unless it clearly explains which components and why.
+            - If the summary is weak but salvageable, provide specific improvement instructions.
+
+            Return structured output only.
+            """)
+        ]
+
+        judgement = structured_llm.invoke(messages)
+        judgement_feedback = "\n".join(judgement.feedback).strip() if judgement.feedback else ""
+
+        return {
+            "summary_acceptable": judgement.summary_acceptable,
+            "summary_feedback": judgement_feedback
+        }
+        
 
     def writer_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         """

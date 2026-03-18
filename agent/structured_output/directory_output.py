@@ -5,7 +5,7 @@
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 """
 class DirectoryContents(BaseModel):
@@ -20,6 +20,7 @@ class DirectoryOutput(BaseModel):
     """
     @brief A pydantic BaseModel representing the structured output of a summary of a directory.
     """
+    model_config = ConfigDict(extra="forbid")
     directory_name: str = Field(..., description="The name of the directory being summarized.")
     directory_path: str = Field(..., description="The full relative path of the directory being summarized, from the root of the codebase.")
     # contents: DirectoryContents = Field(..., description="The contents of the directory, including lists of files and subdirectories. This field is required, but the lists within it may be empty if there are no files or subdirectories or if they cannot be determined.")
@@ -31,7 +32,16 @@ class ContextAnalysisOutput(BaseModel):
     """
     @brief A pydantic BaseModel representing the output of the context analysis node.
     """
+    model_config = ConfigDict(extra="forbid")
     sufficient_code_context: bool = Field(description="Whether the retrieved code context is sufficient to summarize the current directory.")
     sufficient_summary_context: bool = Field(description="Whether the retrieved summary context is sufficient to summarize the current directory.")
     recommended_codebase_k_increase: int = Field(default=0,description="How many more code snippets to retrieve.")
     recommended_file_summary_k_increase: int = Field(default=0,description="How many more file summaries to retrieve.")
+
+class JudgementOutput(BaseModel):
+    """
+    @brief A pydantic Basemodel representing the output of the judgement node.
+    """
+    model_config = ConfigDict(extra="forbid")
+    summary_acceptable: bool = Field(..., description="Whether the generated directory summary is satisfactory and meets the required standards.")
+    feedback: Optional[str] = Field(default=None, description="Detailed information regarding the evaluation of the generated directory summary, including any identified strengths, weaknesses, or areas for improvement. This field may be left empty if the summary is deemed satisfactory or if specific feedback cannot be provided.")
