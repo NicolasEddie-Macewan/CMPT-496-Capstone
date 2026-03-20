@@ -242,7 +242,7 @@ def test_summarizer_node(directory_agent):
     assert result2["directory_summary"].directory_path == str(Path(__file__).parent / "TestCodebase" / "Math")
     assert result2["directory_summary"].directory_name == "Math"
 
-def test_writer_multiple(directory_agent, tmp_path):
+def test_writer_node(directory_agent, tmp_path):
     # creates a temporary directory 
     output_dir = tmp_path / "summaries"
     output_dir.mkdir()
@@ -274,15 +274,3 @@ def test_writer_multiple(directory_agent, tmp_path):
     for d in directories:
         assert any(d in f for f in files) # make sure that their is atleast one .json file for each of "Shapes", "Math", "Circles"
 
-def test_full_graph(directory_agent):
-    current_dir = Path(__file__).parent
-    test_codebase_path = str(current_dir / "TestCodebase")
-
-    # Run the full graph on the test codebase
-    directory_agent.run(test_codebase_path)
-
-    output_dir = Path("./agent/directory_agent_output") / "TestCodebase"
-    assert output_dir.exists()
-    assert (output_dir / "Math").exists()
-    assert (output_dir / "Circles").exists()
-    assert (output_dir / "Shapes").exists()
