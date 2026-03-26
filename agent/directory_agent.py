@@ -41,6 +41,7 @@ class DirectoryAgent:
         builder.add_node("retriever", self.retriever_node)
         builder.add_node("context_analyser", self.context_analyser_node)
         builder.add_node("summarizer", self.summarizer_node)
+        builder.add_node("root_summarizer", self.root_summary_node)
         builder.add_node("judgement", self.judgement_node)
         builder.add_node("refinement", self.refinement_node)
         builder.add_node("writer", self.writer_node)
@@ -51,11 +52,11 @@ class DirectoryAgent:
         builder.add_edge("retriever", "context_analyser")
         builder.add_conditional_edges(
             "context_analyser",
-            lambda state: "summarizer"
-            if state["sufficient_code_context"] and state["sufficient_summary_context"]
-            else "retriever"
+            lambda state: "root_summarizer" if state.get("current_directory") == state.get("directory_path")
+            else ("summarizer" if state["sufficient_code_context"] and state["sufficient_summary_context"] else "retriever")
         )
         builder.add_edge("summarizer", "judgement")
+        builder.add_edge("root_summarizer", "judgement")
         builder.add_conditional_edges(
             "judgement",
             lambda state: "writer" if state["summary_acceptable"] or state["refinement_attempts"] >= 2 else "refinement"
@@ -496,6 +497,84 @@ class DirectoryAgent:
                     purpose = f"Error generating summary: {e}")
             }
         
+    def root_summary_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
+        if (isinstance(self.llm, GenericFakeChatModel)):
+            output = self.llm.invoke("")
+            return {
+                "directory_summary": DirectoryOutput(
+                    directory_name = Path(state["current_directory"]).name,
+                    directory_path = state["current_directory"],
+                    purpose = output.content)
+        }
+
+        try:
+            structured_llm = self.llm.with_structured_output(DirectoryOutput)
+            # Gather all relevant context for summarization
+            current_dir = state["current_directory"]
+            child_summaries = self._get_child_directory_summaries(current_dir, state["child_summaries"])
+            formatted_child_summaries = self._format_child_summaries(child_summaries)
+            summary_context = "\n\n".join(state["summary_context"])
+            code_context = "\n\n".join(state["code_context"])
+            
+            system_message = """You are a principal software architect writing a root-level codebase summary for a business analyst.
+                                Your job is to explain what the system appears to enforce, why those rules matter, and how responsibilities are distributed across the codebase.
+                                Prioritize business meaning over implementation trivia while staying strictly evidence-based."""
+
+            prompt = f"""ROOT DIRECTORY TO ANALYZE: {state['current_directory']}
+
+                        INPUT DATA:
+                        1. CHILD DIRECTORY SUMMARIES:
+                        {formatted_child_summaries if formatted_child_summaries else "None"}
+
+                        2. FILE-LEVEL SUMMARIES:
+                        {summary_context if summary_context else "None"}
+
+                        3. CODE SNIPPETS:
+                        {code_context if code_context else "None"}
+
+                        TASK:
+                        Produce a root-level summary of the entire codebase that emphasizes business rules, core responsibilities, and operational implications.
+
+                        RESPONSE SHAPE:
+                        - Purpose: multiple dense paragraphs that describe what the codebase is for and the major outcomes it enforces.
+                        - Responsibilities: a focused list of concrete responsibilities the overall system owns.
+
+                        QUALITY BAR:
+                        - Synthesize across sources. Do not produce a file-by-file recap.
+                        - Prefer statements of policy and behavior (what must happen, what is validated, what is restricted, what is guaranteed).
+                        - Separate domain policy from technical mechanism.
+                        - Use explicit inference labeling when needed: begin inferred claims with "Inference:".
+                        - If evidence is weak or conflicting, say so explicitly and describe the uncertainty.
+                        - Be specific and concrete; avoid generic phrases like "handles business logic".
+                        - Do not invent requirements, constraints, or workflows not supported by the context.
+
+                        PRIORITY:
+                        If there is tension between completeness and relevance, prioritize relevance to business analysts.
+
+                        STYLE:
+                        Use precise, direct language. Avoid buzzwords and filler."""
+    
+            messages = [("system", system_message), ("user", prompt)]
+
+            # Generate summary using LLM
+            output = structured_llm.invoke(messages)
+
+            print(f"Generated root summary for directory {state['current_directory']}")
+
+            return {
+                "directory_summary": output
+            }
+            
+        
+        except Exception as e:
+            print(f"Error during summarization: {e}")
+            return {
+                "directory_summary": DirectoryOutput(
+                    directory_name = Path(state["current_directory"]).name,
+                    directory_path = state["current_directory"],
+                    purpose = f"Error generating summary: {e}")
+        }
+        
     def judgement_node(self, state: DirectoryGraphState) -> DirectoryGraphState:
         """
         @brief Evaluates the quality of the generated directory summary and determines if it meets the required standards.
@@ -663,20 +742,26 @@ class DirectoryAgent:
         directory_summary = state['directory_summary']
         current_dir = state["current_directory"]
         
-        # create relative path from absolute
-        rel_path = os.path.relpath(directory_summary.directory_path, state["directory_path"])
+        # Determine root/non-root from workflow state, not model-generated output.
+        rel_path = os.path.relpath(current_dir, state["directory_path"])
+        rel_path_normalized = Path(rel_path).as_posix()
+        is_root_summary = rel_path_normalized in {".", "./"}
 
         # case for root level summary
-        if rel_path == ".":
+        if is_root_summary:
             final_dir = os.path.join(codebase_subdir, "root_output")
             os.makedirs(final_dir, exist_ok=True)
 
-            safe_name = state["codebase_name"] + ".json"
+            root_name = (state.get("codebase_name") or Path(state["directory_path"]).name or "root").strip()
+            safe_name = root_name + ".json"
             full_path = os.path.join(final_dir, safe_name)
         
         # case for non-root level summaries
         else:
-            safe_name = Path(rel_path).as_posix().strip("./").replace("/", "_") + ".json"
+            rel_name = rel_path_normalized.strip("./").replace("/", "_")
+            if not rel_name:
+                rel_name = Path(current_dir).name or "unnamed_directory"
+            safe_name = rel_name + ".json"
             full_path = os.path.join(codebase_subdir, safe_name)
         
         # write summary into .JSON file
@@ -705,7 +790,6 @@ class DirectoryAgent:
             "child_summaries": {current_dir: directory_summary}
         }
         
-
     # Helper methods
     def _normalize_path(self, path_value: str) -> str:
         """
