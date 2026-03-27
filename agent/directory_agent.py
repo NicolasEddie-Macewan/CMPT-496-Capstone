@@ -522,43 +522,49 @@ class DirectoryAgent:
             summary_context = "\n\n".join(state["summary_context"])
             code_context = "\n\n".join(state["code_context"])
             
-            system_message = """You are a principal software architect writing a root-level codebase summary for a business analyst.
-                                Your job is to explain what the system appears to enforce, why those rules matter, and how responsibilities are distributed across the codebase.
-                                Prioritize business meaning over implementation trivia while staying strictly evidence-based."""
+            system_message = """You are a principal software architect writing a comprehensive root-level codebase summary.
+Your audience includes technical leads, stakeholders, and new developers seeking to understand the entire system.
+Your task is to synthesize information about all major subsystems into a cohesive overview of what the codebase is, 
+how its parts work together, and what the overall system delivers."""
 
             prompt = f"""ROOT DIRECTORY TO ANALYZE: {state['current_directory']}
 
-                        INPUT DATA:
-                        1. CHILD DIRECTORY SUMMARIES:
-                        {formatted_child_summaries if formatted_child_summaries else "None"}
+INPUT DATA (in order of priority):
+1. CHILD DIRECTORY SUMMARIES (primary basis for root-level synthesis):
+{formatted_child_summaries if formatted_child_summaries else "None"}
 
-                        2. FILE-LEVEL SUMMARIES:
-                        {summary_context if summary_context else "None"}
+2. FILE-LEVEL SUMMARIES (secondary — use to fill gaps and provide detail):
+{summary_context if summary_context else "None"}
 
-                        3. CODE SNIPPETS:
-                        {code_context if code_context else "None"}
+3. CODE SNIPPETS (tertiary — reference only if necessary for clarification):
+{code_context if code_context else "None"}
 
-                        TASK:
-                        Produce a root-level summary of the entire codebase that emphasizes business rules, core responsibilities, and operational implications.
+TASK:
+Write a comprehensive root-level summary of the entire codebase that explains the system as a whole to someone new to the project.
 
-                        RESPONSE SHAPE:
-                        - Purpose: multiple dense paragraphs that describe what the codebase is for and the major outcomes it enforces.
-                        - Responsibilities: a focused list of concrete responsibilities the overall system owns.
+YOUR SUMMARY MUST ANSWER:
+1. What is this codebase? (high-level purpose, problem domain, main use case)
+2. How are the major subsystems organized? (not just what each does, but how they relate and depend on each other)
+3. What are the main data flows or processing pipelines? (how does information move through the system?)
+4. What are the core capabilities the system provides? (end user or API perspective, not implementation details)
+5. What are the notable architectural patterns or constraints? (why is it structured this way?)
 
-                        QUALITY BAR:
-                        - Synthesize across sources. Do not produce a file-by-file recap.
-                        - Prefer statements of policy and behavior (what must happen, what is validated, what is restricted, what is guaranteed).
-                        - Separate domain policy from technical mechanism.
-                        - Use explicit inference labeling when needed: begin inferred claims with "Inference:".
-                        - If evidence is weak or conflicting, say so explicitly and describe the uncertainty.
-                        - Be specific and concrete; avoid generic phrases like "handles business logic".
-                        - Do not invent requirements, constraints, or workflows not supported by the context.
+RESPONSE SHAPE:
+- Purpose: multiple dense paragraphs covering the above five questions. Aim comprehensiveness over conceiseness, but avoid unnecessary detail. Use concrete language and specific examples from the provided context to support your statements.
+- Responsibilities: a list of the major capability areas or domains the system owns (5-10 items), named concisely.
+  Example good names: "Table formatting and rendering", "Column alignment and text wrapping", "Data source abstraction"
+  Example bad names: "formatting", "utilities", "core logic"
 
-                        PRIORITY:
-                        If there is tension between completeness and relevance, prioritize relevance to business analysts.
+QUALITY BAR:
+- Synthesize across subsystems. Do not recap each child directory in sequence.
+- Explain relationships and interdependencies between major parts, not just their isolated roles.
+- Be specific and concrete. Avoid vague phrases like "provides functionality", "handles processing", or "manages data".
+- If child summaries are thin or conflicting, acknowledge the gap rather than speculating.
+- Do not invent architectural patterns or design decisions not supported by the provided context.
 
-                        STYLE:
-                        Use precise, direct language. Avoid buzzwords and filler."""
+DIFFERENCE FROM INDIVIDUAL DIRECTORY SUMMARIES:
+This is a root-level synthesis. It should be noticeably more comprehensive and higher-level than individual directory summaries.
+Show how the parts connect and the overall shape of the system, not just what each part does in isolation."""
     
             messages = [("system", system_message), ("user", prompt)]
 
