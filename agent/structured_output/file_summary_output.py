@@ -91,9 +91,7 @@ class BusinessRule(BaseModel):
     @brief Represents a business rule extracted from source code.
     """
     model_config = ConfigDict(extra="forbid")
-    rule: str = Field(..., description="A concise statement of the business rule.")
-    explanation: str = Field(..., description="How this rule is implied by the code.")
-    supporting_code: list[str] = Field(..., description="Code snippets that evidence this rule.")
+    rule: str = Field(..., description="A concise statement of a business rule implied by the code.")
 
 class FileSummaryOutput(BaseModel):
     """
