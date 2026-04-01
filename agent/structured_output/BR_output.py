@@ -18,7 +18,7 @@ class CondensedRule(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     id: int = Field(..., description="Stable unique identifier for the rule, assigned sequentially by the condenser node.")
-    rule: str = Field(..., description="The condensed business rule statement.")
+    rule: str = Field(..., description="The combined business rule statement.")
     source_directory: str = Field(..., description="The directory this rule pertains to.")
     source_file_paths: list[str] = Field(default_factory=list, description="File paths from which this rule was originally derived. May span multiple files if the condenser merged related rules.")
 

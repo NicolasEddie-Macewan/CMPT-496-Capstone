@@ -17,10 +17,13 @@ from dotenv import load_dotenv
 import os
 import sys
 import json
+import asyncio
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from pathlib import Path
-from collections import deque
+from collections import deque, defaultdict
+
+MAX_CONCURRENCY = 10
 
 
 class BRAgent:
@@ -75,7 +78,10 @@ class BRAgent:
 
         # Set edges
         builder.set_entry_point("condenser")
-        builder.add_edge("condenser", "retriever")
+        builder.add_conditional_edges(
+            "condenser",
+            lambda state: "retriever" if state.get("current_rule") else "writer"
+        )
         builder.add_edge("retriever", "validator")
         builder.add_conditional_edges(
             "validator",
@@ -125,31 +131,157 @@ class BRAgent:
             "output_directory": "./agent/BR_agent_output",
         }
 
-        return self.graph.invoke(initial_state)
+        self._loop = asyncio.new_event_loop()
+        try:
+            return self.graph.invoke(initial_state)
+        finally:
+            self._loop.close()
+            self._loop = None
 
     def condenser_node(self, state: BRGraphState) -> BRGraphState:
         """
         @brief Condenses duplicate or near-duplicate business rules from G1/G2 output.
 
         @details
-        Implementation considerations:
-        - Receives raw rules via state["input_rules"], a dict keyed by file/directory path.
-        - Groups rules by directory. The directory should be derived from the file path keys
-          (e.g., os.path.dirname(file_path) relative to the codebase root).
-        - For each directory group, prompts the LLM (with CondenserOutput structured output) to
-          identify and merge duplicate or near-duplicate rules into a single condensed statement.
-        - Assigns sequential integer IDs to all condensed rules across all groups.
-        - Wraps each condensed rule string into a CondensedRule object carrying the source_directory
-          and the list of source_file_paths from which the group's rules originated.
-        - Populates rules_queue with all CondensedRule objects and pops the first as current_rule.
-        - The specific condensation strategy (single LLM call vs. embedding-based pre-clustering)
-          is to be determined based on observed rule volumes from real G1/G2 output.
-        - Runs exactly once at the start of the graph.
+        Groups input rules by directory (derived from file path keys, made relative to codebase root).
+        For each directory group with more than one rule, prompts the LLM (with CondenserOutput
+        structured output) to identify and merge duplicates or near-duplicates.
+        Single-rule groups are passed through without an LLM call.
+        LLM calls are batched concurrently across directory groups for speed.
+        IDs are assigned sequentially after all results are collected, in sorted directory order.
+        Each CondensedRule carries all source file paths from its directory group.
+        Runs exactly once at the start of the graph.
 
-        @param state Current workflow state containing input_rules.
-        @return Updated state with rules_queue, current_rule populated.
+        @param state Current workflow state containing input_rules and codebase_name.
+        @return Updated state with rules_queue and current_rule populated.
         """
-        pass
+        input_rules = state["input_rules"]
+        codebase_name = state["codebase_name"]
+
+        # Handle empty input
+        if not input_rules:
+            return {
+                "rules_queue": deque(),
+                "current_rule": None,
+            }
+
+        # Group rules by relative directory
+        # Keys in input_rules are file paths; derive directory relative to codebase root
+        dir_groups: dict[str, dict] = defaultdict(lambda: {"rules": [], "file_paths": set()})
+
+        for file_path, rules in input_rules.items():
+            abs_dir = os.path.dirname(file_path)
+
+            # Attempt to make the directory relative to the codebase root
+            # The codebase root name appears in the path; find it and compute relative
+            try:
+                path_obj = Path(abs_dir)
+                # Walk up to find the codebase root directory
+                parts = path_obj.parts
+                codebase_idx = None
+                for i, part in enumerate(parts):
+                    if part == codebase_name:
+                        codebase_idx = i
+                        break
+
+                if codebase_idx is not None:
+                    rel_dir = Path(*parts[codebase_idx:]).as_posix()
+                else:
+                    rel_dir = Path(abs_dir).as_posix()
+            except (ValueError, TypeError):
+                rel_dir = abs_dir
+
+            dir_groups[rel_dir]["file_paths"].add(file_path)
+            dir_groups[rel_dir]["rules"].extend(rules)
+
+        # Filter out groups with no rules
+        dir_groups = {k: v for k, v in dir_groups.items() if v["rules"]}
+
+        # Separate single-rule groups (no LLM call needed) from multi-rule groups
+        single_rule_groups = {}
+        multi_rule_groups = {}
+        for dir_name, group in dir_groups.items():
+            if len(group["rules"]) == 1:
+                single_rule_groups[dir_name] = group
+            else:
+                multi_rule_groups[dir_name] = group
+
+        # Batch async LLM calls for multi-rule groups
+        structured_llm = self.llm.with_structured_output(CondenserOutput)
+        sorted_multi_dirs = sorted(multi_rule_groups.keys())
+
+        async def run_batch():
+            sem = asyncio.Semaphore(MAX_CONCURRENCY)
+            async def guarded(directory: str):
+                async with sem:
+                    return await _condense_group(
+                        structured_llm,
+                        directory,
+                        multi_rule_groups[directory]["rules"]
+                    )
+            return await asyncio.gather(
+                *(guarded(d) for d in sorted_multi_dirs)
+            )
+
+        if sorted_multi_dirs:
+            results = self._loop.run_until_complete(run_batch())
+        else:
+            results = []
+
+        # Build condensed rule results keyed by directory (preserving sorted order)
+        # results[i] corresponds to sorted_multi_dirs[i]
+        condensed_by_dir: dict[str, list[str]] = {}
+        for dir_name, (returned_dir, condensed_strings, err) in zip(sorted_multi_dirs, results):
+            if err is not None:
+                # On error, pass through original rules uncondensed
+                print(f"Condensation error for {dir_name}: {err}")
+                condensed_strings = [r.rule for r in multi_rule_groups[dir_name]["rules"]]
+            condensed_by_dir[dir_name] = condensed_strings
+
+        # Assign sequential IDs across all groups in sorted directory order
+        all_condensed: list[CondensedRule] = []
+        rule_id = 1
+
+        for dir_name in sorted(dir_groups.keys()):
+            group = dir_groups[dir_name]
+            file_paths = sorted(group["file_paths"])
+
+            if dir_name in single_rule_groups:
+                # Single rule — pass through without LLM
+                rule_text = group["rules"][0].rule
+                all_condensed.append(CondensedRule(
+                    id=rule_id,
+                    rule=rule_text,
+                    source_directory=dir_name,
+                    source_file_paths=file_paths,
+                ))
+                rule_id += 1
+            else:
+                # Multi-rule group — use LLM-condensed results
+                for rule_text in condensed_by_dir[dir_name]:
+                    all_condensed.append(CondensedRule(
+                        id=rule_id,
+                        rule=rule_text,
+                        source_directory=dir_name,
+                        source_file_paths=file_paths,
+                    ))
+                    rule_id += 1
+
+        # Populate queue and set first rule
+        if all_condensed:
+            rules_queue = deque(all_condensed[1:])
+            current_rule = all_condensed[0]
+        else:
+            rules_queue = deque()
+            current_rule = None
+
+        print(f"Condensed {sum(len(g['rules']) for g in dir_groups.values())} input rules "
+              f"into {len(all_condensed)} condensed rules across {len(dir_groups)} directory groups.")
+
+        return {
+            "rules_queue": rules_queue,
+            "current_rule": current_rule,
+        }
 
     def retriever_node(self, state: BRGraphState) -> BRGraphState:
         """
@@ -234,6 +366,56 @@ class BRAgent:
         @return Empty dict (terminal node).
         """
         pass
+
+
+async def _condense_group(structured_llm, directory: str, rules: list) -> tuple[str, list[str], Exception | None]:
+    """
+    @brief Async helper that prompts the LLM to condense a single directory group of business rules.
+    @param structured_llm LLM configured with CondenserOutput structured output.
+    @param directory The relative directory name for this group.
+    @param rules List of BusinessRule objects to condense.
+    @return Tuple of (directory, list of condensed rule strings, error or None).
+    """
+    try:
+        rule_list = "\n".join(f"{i+1}. {r.rule}" for i, r in enumerate(rules))
+        messages = [
+            ("system",
+             "You are a Senior Software Architect. Your task is to condense a list of "
+             "business rules by merging rules that are semantically similar or redundant."),
+            ("user",
+             f"Directory: {directory}\n\n"
+             f"Business rules to condense:\n{rule_list}\n\n"
+             "MERGING GUIDELINES:\n"
+             "- Merge rules that express the same constraint or policy in different words.\n"
+             "- Merge rules that are specific instances of a more general pattern. When several "
+             "rules each describe a similar aspect of the codebase's behaviour but for different "
+             "cases, combine them into one general rule that captures the shared intent.\n"
+             "- When merging, produce a single clear statement that preserves the meaning of "
+             "all merged rules. Do not lose important specifics unless they are redundant.\n"
+             "- Do NOT merge rules that govern different aspects of the system, even if they "
+             "sound superficially similar.\n"
+             "- Do NOT invent new rules that are not supported by the originals.\n"
+             "- Do NOT discard a rule unless it is fully covered by another rule in the list.\n"
+             "- Rules that are already unique and distinct should be kept as-is.\n\n"
+             "POSITIVE EXAMPLE — rules that SHOULD be merged:\n"
+             "Input:\n"
+             "  1. A number can be converted into its written French representation.\n"
+             "  2. A number can be converted into its written Arabic representation.\n"
+             "  3. A number can be converted into its written Spanish representation.\n"
+             "Output:\n"
+             "  1. A number can be converted into written representations in various languages.\n\n"
+             "NEGATIVE EXAMPLE — rules that should NOT be merged:\n"
+             "Input:\n"
+             "  1. Order total must be non-negative.\n"
+             "  2. An order must contain at least one item to be processed.\n"
+             "These both relate to order validation, but they enforce different constraints "
+             "(value range vs. item count). They must remain separate.\n\n"
+             "Return the condensed list of business rules.")
+        ]
+        output = await structured_llm.ainvoke(messages)
+        return directory, output.condensed_rules, None
+    except Exception as e:
+        return directory, [], e
 
 
 if __name__ == "__main__":
