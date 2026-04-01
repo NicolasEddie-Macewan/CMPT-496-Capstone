@@ -123,8 +123,8 @@ class BRAgent:
             "discarded_rules": [],
             "code_context": [],
             "summary_context": [],
-            "codebase_k": 10,
-            "file_summary_k": 10,
+            "codebase_k": 15,
+            "file_summary_k": 5,
             "code_collection": code_collection,
             "summary_collection": summary_collection,
             "codebase_name": codebase_name,
@@ -285,26 +285,109 @@ class BRAgent:
 
     def retriever_node(self, state: BRGraphState) -> BRGraphState:
         """
-        @brief Retrieves relevant code snippets and file summaries for the current rule.
+        @brief Retrieves relevant code snippets and file summaries for the current business rule.
 
         @details
-        Implementation considerations:
-        - Takes current_rule from state and queries both vector stores (code_collection and
-          summary_collection).
-        - The query should be composed from the rule text and the source_directory of the
-          current rule. If source_file_paths are available, they can be used to bias or
-          prioritize results from the rule's origin files.
-        - Retrieval depth is controlled by codebase_k and file_summary_k, which may be
-          increased by the validator on "need_more_context" decisions.
-        - Retrieved results are appended to code_context and summary_context (accumulating
-          across iterations for the same rule). Duplicates should be avoided.
-        - Follows the same retrieval and formatting pattern as DirectoryAgent.retriever_node,
-          but the query is constructed from business rule text rather than directory name.
+        Queries two ChromaDB vector collections (code and summary) using the current rule's
+        text and source directory as the query. Results are prioritized in three tiers:
+            1. Results from the rule's source files (highest priority)
+            2. Results from the rule's source directory
+            3. All other results (fallback)
+
+        Retrieved context accumulates across retrieval iterations for the same rule.
+        Duplicates are filtered out using a set of previously retrieved items.
+        Retrieval depth is controlled by codebase_k and file_summary_k, which may be
+        increased by the validator on "need_more_context" decisions.
 
         @param state Current workflow state containing current_rule and retrieval parameters.
         @return Updated state with code_context and summary_context populated/extended.
+        @raises ValueError If current_rule is not set.
         """
-        pass
+        current_rule = state.get("current_rule")
+        if not current_rule:
+            raise ValueError("No current rule to retrieve context for.")
+
+        code_collection = state["code_collection"]
+        summary_collection = state["summary_collection"]
+
+        source_directory = current_rule.source_directory
+        source_file_paths = current_rule.source_file_paths
+
+        # Build query text: rule text is the primary signal, directory is secondary context
+        query_text = f"{current_rule.rule} {source_directory}"
+
+        code_k = state["codebase_k"]
+        summary_k = state["file_summary_k"]
+
+        # Query both vector stores
+        code_results = code_collection.query(
+            query_texts=[query_text],
+            n_results=code_k
+        )
+
+        summary_results = summary_collection.query(
+            query_texts=[query_text],
+            n_results=summary_k
+        )
+
+        # Track existing context for deduplication
+        existing_code_context = set(state.get("code_context", []))
+        existing_summary_context = set(state.get("summary_context", []))
+
+        # Process code results with three-tier prioritization
+        code_docs = code_results.get("documents", [[]])[0]
+        code_metas = code_results.get("metadatas", [[]])[0]
+
+        source_file_code = []
+        directory_code = []
+        fallback_code = []
+
+        for doc, meta in zip(code_docs, code_metas):
+            file_path = self._normalize_path(meta.get("file", ""))
+            formatted = self._format_code_result(doc, meta, source_directory)
+
+            if self._is_from_source_file(file_path, source_file_paths):
+                source_file_code.append(formatted)
+            elif self._is_in_directory(file_path, source_directory):
+                directory_code.append(formatted)
+            else:
+                fallback_code.append(formatted)
+
+        # Process summary results with three-tier prioritization
+        summary_docs = summary_results.get("documents", [[]])[0]
+        summary_metas = summary_results.get("metadatas", [[]])[0]
+
+        source_file_summary = []
+        directory_summary = []
+        fallback_summary = []
+
+        for doc, meta in zip(summary_docs, summary_metas):
+            summary_path = self._normalize_path(meta.get("path", ""))
+            formatted = self._format_summary_result(doc, meta, source_directory)
+
+            if self._is_from_source_file(summary_path, source_file_paths):
+                source_file_summary.append(formatted)
+            elif self._is_in_directory(summary_path, source_directory):
+                directory_summary.append(formatted)
+            else:
+                fallback_summary.append(formatted)
+
+        # Append new results to context (prioritized order, no duplicates)
+        updated_code_context = list(state.get("code_context", []))
+        updated_summary_context = list(state.get("summary_context", []))
+
+        for item in source_file_code + directory_code + fallback_code:
+            if item not in existing_code_context:
+                updated_code_context.append(item)
+
+        for item in source_file_summary + directory_summary + fallback_summary:
+            if item not in existing_summary_context:
+                updated_summary_context.append(item)
+
+        return {
+            "code_context": updated_code_context,
+            "summary_context": updated_summary_context,
+        }
 
     def validator_node(self, state: BRGraphState) -> BRGraphState:
         """
@@ -324,7 +407,8 @@ class BRAgent:
             * "discard": the rule is not supported and additional retrieval is unlikely to help.
 
         On "need_more_context":
-        - Increase codebase_k and file_summary_k (bounded by a maximum cap).
+        - Increase codebase_k and file_summary_k (bounded by maximum caps).
+          Suggested maximums: codebase_k max = 30, file_summary_k max = 10.
         - If k values have reached the cap, force a decision (valid or discard) — do not allow
           infinite retrieval loops.
         - Keep current_rule unchanged so the conditional edge routes back to the retriever.
@@ -367,6 +451,92 @@ class BRAgent:
         """
         pass
 
+    # Helper methods
+
+    def _normalize_path(self, path_value: str) -> str:
+        """
+        @brief Normalizes a filesystem path to POSIX format.
+        @param path_value The path to normalize.
+        @return The normalized POSIX-style path, or an empty string if the input is empty.
+        """
+        if not path_value:
+            return ""
+        return Path(path_value).as_posix()
+
+    def _is_in_directory(self, candidate_path: str, target_rel_dir: str) -> bool:
+        """
+        @brief Checks whether a file path belongs to a specified directory.
+        @param candidate_path The file path being evaluated.
+        @param target_rel_dir The relative directory to check membership against.
+        @return True if the path belongs to the directory or one of its subdirectories.
+        """
+        candidate_path = self._normalize_path(candidate_path)
+
+        if target_rel_dir == ".":
+            return True
+
+        parent_dir = Path(candidate_path).parent.as_posix()
+        return parent_dir == target_rel_dir or parent_dir.startswith(target_rel_dir + "/")
+
+    def _is_from_source_file(self, candidate_path: str, source_file_paths: list[str]) -> bool:
+        """
+        @brief Checks whether a retrieved result's file path matches any of the rule's source files.
+        @param candidate_path The file path from the retrieved result's metadata.
+        @param source_file_paths List of source file paths from the CondensedRule.
+        @return True if the candidate matches any source file path.
+        """
+        candidate_normalized = self._normalize_path(candidate_path)
+        for source_path in source_file_paths:
+            source_normalized = self._normalize_path(source_path)
+            # Check both exact match and suffix match (handles absolute vs relative paths)
+            if candidate_normalized == source_normalized:
+                return True
+            if candidate_normalized.endswith(source_normalized) or source_normalized.endswith(candidate_normalized):
+                return True
+        return False
+
+    def _format_code_result(self, doc: str, meta: dict, source_directory: str) -> str:
+        """
+        @brief Formats a retrieved code chunk and its metadata for inclusion in context.
+        @param doc The retrieved code snippet content.
+        @param meta Metadata associated with the snippet.
+        @param source_directory The source directory of the current rule.
+        @return A formatted string representing the code context entry.
+        """
+        file_path = self._normalize_path(str(meta.get("file", "unknown")))
+
+        return (
+            f"[CODE CHUNK]\n"
+            f"Directory: {source_directory}\n"
+            f"File: {file_path}\n"
+            f"Container: {meta.get('container', 'unknown')}\n"
+            f"Name: {meta.get('name', 'unknown')}\n"
+            f"Type: {meta.get('type', 'unknown')}\n"
+            f"Namespace: {meta.get('namespace', 'unknown')}\n"
+            f"Lines: {meta.get('start_line', '?')}-{meta.get('end_line', '?')}\n"
+            f"Content:\n{doc}"
+        )
+
+    def _format_summary_result(self, doc: str, meta: dict, source_directory: str) -> str:
+        """
+        @brief Formats a retrieved summary entry and its metadata for context.
+        @param doc The retrieved summary text.
+        @param meta Metadata associated with the summary node.
+        @param source_directory The source directory of the current rule.
+        @return A formatted string representing the summary context entry.
+        """
+        summary_path = self._normalize_path(str(meta.get("path", "unknown")))
+
+        return (
+            f"[SUMMARY NODE]\n"
+            f"Directory: {source_directory}\n"
+            f"Path: {summary_path}\n"
+            f"Node Type: {meta.get('type', 'unknown')}\n"
+            f"Name: {meta.get('name', 'unknown')}\n"
+            f"Parent: {meta.get('parent', 'N/A')}\n"
+            f"Content:\n{doc}"
+        )
+
 
 async def _condense_group(structured_llm, directory: str, rules: list) -> tuple[str, list[str], Exception | None]:
     """
@@ -378,40 +548,40 @@ async def _condense_group(structured_llm, directory: str, rules: list) -> tuple[
     """
     try:
         rule_list = "\n".join(f"{i+1}. {r.rule}" for i, r in enumerate(rules))
-        messages = [
-            ("system",
-             "You are a Senior Software Architect. Your task is to condense a list of "
-             "business rules by merging rules that are semantically similar or redundant."),
-            ("user",
-             f"Directory: {directory}\n\n"
-             f"Business rules to condense:\n{rule_list}\n\n"
-             "MERGING GUIDELINES:\n"
-             "- Merge rules that express the same constraint or policy in different words.\n"
-             "- Merge rules that are specific instances of a more general pattern. When several "
-             "rules each describe a similar aspect of the codebase's behaviour but for different "
-             "cases, combine them into one general rule that captures the shared intent.\n"
-             "- When merging, produce a single clear statement that preserves the meaning of "
-             "all merged rules. Do not lose important specifics unless they are redundant.\n"
-             "- Do NOT merge rules that govern different aspects of the system, even if they "
-             "sound superficially similar.\n"
-             "- Do NOT invent new rules that are not supported by the originals.\n"
-             "- Do NOT discard a rule unless it is fully covered by another rule in the list.\n"
-             "- Rules that are already unique and distinct should be kept as-is.\n\n"
-             "POSITIVE EXAMPLE — rules that SHOULD be merged:\n"
-             "Input:\n"
-             "  1. A number can be converted into its written French representation.\n"
-             "  2. A number can be converted into its written Arabic representation.\n"
-             "  3. A number can be converted into its written Spanish representation.\n"
-             "Output:\n"
-             "  1. A number can be converted into written representations in various languages.\n\n"
-             "NEGATIVE EXAMPLE — rules that should NOT be merged:\n"
-             "Input:\n"
-             "  1. Order total must be non-negative.\n"
-             "  2. An order must contain at least one item to be processed.\n"
-             "These both relate to order validation, but they enforce different constraints "
-             "(value range vs. item count). They must remain separate.\n\n"
-             "Return the condensed list of business rules.")
-        ]
+
+        system_message = """You are a Senior Software Architect. Your task is to condense a list of business rules by merging rules that are semantically similar or redundant."""
+
+        prompt = f"""Directory: {directory}
+
+        Business rules to condense:
+        {rule_list}
+
+        MERGING GUIDELINES:
+        - Merge rules that express the same constraint or policy in different words.
+        - Merge rules that are specific instances of a more general pattern. When several rules each describe a similar aspect of the codebase's behaviour but for different cases, combine them into one general rule that captures the shared intent.
+        - When merging, produce a single clear statement that preserves the meaning of all merged rules. Do not lose important specifics unless they are redundant.
+        - Do NOT merge rules that govern different aspects of the system, even if they sound superficially similar.
+        - Do NOT invent new rules that are not supported by the originals.
+        - Do NOT discard a rule unless it is fully covered by another rule in the list.
+        - Rules that are already unique and distinct should be kept as-is.
+
+        POSITIVE EXAMPLE — rules that SHOULD be merged:
+        Input:
+        1. A number can be converted into its written French representation.
+        2. A number can be converted into its written Arabic representation.
+        3. A number can be converted into its written Spanish representation.
+        Output:
+        1. A number can be converted into written representations in various languages.
+
+        NEGATIVE EXAMPLE — rules that should NOT be merged:
+        Input:
+        1. Order total must be non-negative.
+        2. An order must contain at least one item to be processed.
+        These both relate to order validation, but they enforce different constraints (value range vs. item count). They must remain separate.
+
+        Return the condensed list of business rules."""
+
+        messages = [("system", system_message), ("user", prompt)]
         output = await structured_llm.ainvoke(messages)
         return directory, output.condensed_rules, None
     except Exception as e:
