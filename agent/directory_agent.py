@@ -600,12 +600,19 @@ Show how the parts connect and the overall shape of the system, not just what ea
         """
         current_dir = state["current_directory"]
 
+        root_directory = state["directory_path"]
+        try:
+            rel_dir = os.path.relpath(current_dir, root_directory)
+        except ValueError:
+            rel_dir = current_dir
+        rel_dir = Path(rel_dir).as_posix()
+
         if isinstance(self.llm, GenericFakeChatModel):
             return {
                 "accumulated_business_rules": {
                     current_dir: BusinessRulesOutput(
                         directory_name=Path(current_dir).name,
-                        directory_path=current_dir,
+                        directory_path=rel_dir,
                         observed_rules=[],
                         inferred_rules=[]
                     )
@@ -615,16 +622,8 @@ Show how the parts connect and the overall shape of the system, not just what ea
         try:
             structured_llm = self.llm.with_structured_output(BusinessRulesOutput)
 
-            root_directory = state["directory_path"]
             summary_collection = state["summary_collection"]
             directory_summary = state["directory_summary"]
-
-            # Compute relative path for directory-scoped filtering
-            try:
-                rel_dir = os.path.relpath(current_dir, root_directory)
-            except ValueError:
-                rel_dir = current_dir
-            rel_dir = Path(rel_dir).as_posix()
 
             # Fetch ALL documents from the summary collection, then post-filter
             # to the current directory. This guarantees completeness unlike the
@@ -652,7 +651,7 @@ Show how the parts connect and the overall shape of the system, not just what ea
                     "accumulated_business_rules": {
                         current_dir: BusinessRulesOutput(
                             directory_name=Path(current_dir).name,
-                            directory_path=directory_summary.directory_path,
+                            directory_path=rel_dir,
                             observed_rules=[],
                             inferred_rules=[]
                         )
@@ -661,38 +660,58 @@ Show how the parts connect and the overall shape of the system, not just what ea
 
             formatted_file_summaries = "\n\n".join(directory_file_summaries)
 
-            system_message = """You are a principal software architect extracting business rules from a software directory.
-Your task is to identify rules that exist *between* files — policies, constraints, or behaviors that only emerge when multiple files or components are considered together.
-Focus strictly on what the code and summaries actually enforce, not general software patterns."""
+            system_message = """You are a business analyst extracting business rules and domain policies from a software system.
+                                Your task is to identify rules that exist *between* files — policies, constraints, or behaviors that only 
+                                emerge when multiple files or components are considered together. Focus strictly on what the code and summaries actually enforce, 
+                                not general software patterns."""
+
 
             prompt = f"""DIRECTORY: {current_dir}
 
-DIRECTORY SUMMARY:
-{directory_summary.purpose}
+                        DIRECTORY SUMMARY:
+                        {directory_summary.purpose}
 
-FILE-LEVEL SUMMARIES FOR THIS DIRECTORY:
-{formatted_file_summaries}
+                        FILE-LEVEL SUMMARIES FOR THIS DIRECTORY:
+                        {formatted_file_summaries}
 
-TASK:
-Extract business rules that are enforced across multiple files in this directory.
-Do not list rules that are entirely contained within a single file.
+                        TASK:
+                        Identify the business rules that exist *between* files — policies, constraints, or behaviors that only emerge when multiple files or components are considered together
+                        A business rule is a constraint, policy, or behavior that the system guarantees to its users — stated in terms of WHAT the system does, not HOW the code implements it.
+                        Do not list rules that are entirely contained within a single file.
 
-OBSERVED RULES:
-Rules that are directly and explicitly evidenced by the file summaries above.
-List each as a single, concrete statement of what the system enforces across multiple files.
+                        State rules in plain language that a non-technical stakeholder could understand.
 
-INFERRED RULES:
-Rules that are implied by patterns across the files but not explicitly named.
-Begin each entry with "Inference:" and describe the implied rule and the evidence that suggests it.
+                        OBSERVED RULES:
+                        Rules that are directly and explicitly evidenced by the file summaries above.
+                        List each as a single, concrete statement of what the system requires, allows, or prevents across multiple files.
 
-CONSTRAINTS:
-- Do not fabricate rules. Every rule must be traceable to at least two of the provided file summaries.
-- If no cross-file rules are visible, return empty lists — do not pad with generic observations.
-- Be specific. Avoid phrases like "enforces validation" — describe what is validated, against what constraint, and which files participate.
-- Ignore rules that are entirely internal to one file."""
+                        INFERRED RULES:
+                        Rules that are implied by the system's behavior across the files but not explicitly named.
+                        Begin each entry with "Inference:" and describe the implied rule in plain, non-technical language.
+
+                        EXAMPLES OF GOOD BUSINESS RULES:
+                        - "Every row in a table must have the same number of columns as defined by the table header."
+                        - "Numeric values are right-aligned by default when displayed in table format."
+                        - "Table output can be redirected to any output destination, not just the console."
+
+                        EXAMPLES OF BAD RULES (do NOT produce these):
+                        - "The From<T> method uses reflection to map properties." (describes implementation mechanism)
+                        - "GetTextWidth calculates Unicode-aware widths." (technical implementation detail)
+                        - "The system provides functionality for data processing." (too vague)
+
+                        CONSTRAINTS:
+                        - Do not fabricate rules. Every rule must be grounded in the provided summaries.
+                        - If no cross-file buisness rules are visible, return empty lists — do not pad with generic observations.
+                        - Be specific. Instead of "enforces validation", say what is validated and what the constraint is.
+                        - Prefer plain, non-technical language. Avoid referencing programming constructs like method signatures, design patterns, or language-specific features.
+                        - Do not give evidence or reasoning in the output — only list the rules themselves in the structured format."""
 
             messages = [("system", system_message), ("user", prompt)]
             output = structured_llm.invoke(messages)
+
+            # Manually set directory_name and directory_path for consistency
+            output.directory_name = Path(current_dir).name
+            output.directory_path = rel_dir
 
             print(f"Extracted business rules for directory {current_dir}")
             return {
@@ -705,7 +724,7 @@ CONSTRAINTS:
                 "accumulated_business_rules": {
                     state["current_directory"]: BusinessRulesOutput(
                         directory_name=Path(state["current_directory"]).name,
-                        directory_path=state["current_directory"],
+                        directory_path=rel_dir,
                         observed_rules=[],
                         inferred_rules=[]
                     )

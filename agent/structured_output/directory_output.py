@@ -51,7 +51,7 @@ class BusinessRulesOutput(BaseModel):
     @brief A pydantic BaseModel representing the business rules extracted from a directory.
     """
     model_config = ConfigDict(extra="forbid")
-    directory_name: str = Field(..., description="The name of the directory for which business rules were extracted.")
-    directory_path: str = Field(..., description="The full relative path of the directory, from the root of the codebase.")
-    observed_rules: list[str] = Field(default_factory=list, description="Business rules that are directly and explicitly evidenced by the provided file summaries. Each rule should be a single, concrete statement of what the system enforces across multiple files.")
-    inferred_rules: list[str] = Field(default_factory=list, description="Business rules that are implied by patterns across the files but not explicitly named in the code. Each entry must begin with 'Inference:' and describe the implied rule and the evidence that suggests it.")
+    directory_name: str = Field(None, description="The name of the directory for which business rules were extracted. Filled in by code post LLM call")
+    directory_path: str = Field(None, description="The full relative path of the directory, from the root of the codebase. Filled in by code post LLM call")
+    observed_rules: list[str] = Field(default_factory=list, description="Business rules or domain policies that the system clearly enforces. Each rule should be a plain-language statement of what the system requires, allows, or prevents — without referencing implementation details like method signatures or design patterns. Do not provide evidence or reasoning, just list the buisness rule (when applicable)")
+    inferred_rules: list[str] = Field(default_factory=list, description="Business rules or domain policies that are implied by the system's behavior but not explicitly named. Each entry must begin with 'Inference:' and describe the implied rule in plain, non-technical language. Do not provide evidence or reasoning, just list the buisness rule (when applicable).")
