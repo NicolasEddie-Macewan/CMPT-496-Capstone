@@ -33,6 +33,43 @@ Download Python: [https://www.python.org/downloads/](https://www.python.org/down
 deactivate
 ```
 
+## To Run First Graph of LanGraph
+
+1. **Make sure you are in the root directory:**
+The current working directory must be root of project (i.e. the directort extension ends in 'CMPT-496-Capstone')
+
+2. **Run the script:**
+```powershell
+python .\agent\file_summary_agent.py 
+```
+
+## Convert JSON summaries to Markdown
+
+```powershell
+# default: reads `agent/file_summary_agent_output` and writes to `<input-dir>/markdown`
+python -m utils.json_to_markdown
+
+# print to stdout for quick verification
+python -m utils.json_to_markdown --stdout
+
+# specify input/output and avoid overwriting
+python -m utils.json_to_markdown --input-dir agent/file_summary_agent_output --output-dir ./markdown --no-overwrite
+```
+
+Flags:
+- `--input-dir`: directory containing JSON summary files (default: `agent/file_summary_agent_output`)
+- `--output-dir`: directory to write markdown files (default: `<input-dir>/markdown`)
+- `--stdout`: print results instead of writing files
+- `--overwrite` / `--no-overwrite`: controls replacing existing `.md` files (default: overwrite enabled)
+- `--ext`: file extension to search for (default: `.json`)
+
+Notes:
+- Run the command from the project root so the default input path resolves correctly.
+
+## How To Run LangGraph Test Cases
+```powershell
+pytest .\test\lang_tests\directory_agent_test.py
+```
 ## Create Vectore Store
 ```powershell
 python -m src.build_database <path_to_target_code>

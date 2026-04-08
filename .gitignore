@@ -1,2 +1,15 @@
 # ignore target codebases
 /targetCodebases
+/vectorStores
+/my_chroma_data
+.env
+.vscode/
+__pycache__/
+*.pyc
+agent/file_summary_agent_output/*
+agent/file_summary_agent_output/*/*.json
+agent/file_summary_agent_output/markdown/
+agent/directory_agent_output/
+agent/BR_agent_output/
+agent/BR_agent_output/*
+agent/BR_agent_output/*/*.json
