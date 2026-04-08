@@ -7,6 +7,7 @@ This repository contains a tool which can be used to perform analysis of large c
 - Summaries of the contents of each directory
 - A summary of the entire repository
 - A list of business rules extracted from the codebase
+
 This is all completed using LangGraph, with an LLM acting as the generator of outputs. There is included a command line tool for running the project, in main.py.
 
 ## Requirements
